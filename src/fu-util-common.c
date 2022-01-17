@@ -289,6 +289,7 @@ fu_util_get_versions(void)
 {
 	GString *string = g_string_new("");
 
+	fu_util_show_unsupported_warn();
 	g_string_append_printf(string, "client version:\t%s\n", SOURCE_VERSION);
 	g_string_append_printf(string, "compile-time dependency versions\n");
 #ifdef HAVE_GUSB
