@@ -270,7 +270,6 @@ fu_util_start_engine(FuUtilPrivate *priv, FuEngineLoadFlags flags, GError **erro
 			   fmt);
 	}
 	fu_util_show_plugin_warnings(priv);
-	fu_util_show_unsupported_warn();
 	return TRUE;
 }
 
@@ -3699,6 +3698,8 @@ main(int argc, char *argv[])
 			g_printerr("%s\n", _("NOTE: This program may only work correctly as root"));
 		}
 #endif
+		/* show any unsupported warnings */
+		fu_util_show_unsupported_warn();
 		return EXIT_FAILURE;
 	}
 
