@@ -127,6 +127,7 @@ struct _FuEngine {
 	GHashTable *emulation_phases;	      /* (element-type int utf8) */
 	GHashTable *emulation_ids;	      /* (element-type str int) */
 	GHashTable *device_changed_allowlist; /* (element-type str int) */
+	GPtrArray *inhibit_guids;	      /* (element-type str) */
 	gchar *host_machine_id;
 	JcatContext *jcat_context;
 	gboolean loaded;
@@ -2021,6 +2022,19 @@ fu_engine_install_releases(FuEngine *self,
 				    GUINT_TO_POINTER(1));
 	}
 
+	/* allow devices to inhibit other devices for the duration of the upgrade */
+	for (guint i = 0; i < releases->len; i++) {
+		FuRelease *release = g_ptr_array_index(releases, i);
+		FuDevice *device = fu_release_get_device(release);
+		GPtrArray *inhibit_guids = fu_device_get_inhibit_guids(device);
+		if (inhibit_guids == NULL)
+			continue;
+		for (guint j = 0; j < inhibit_guids->len; j++) {
+			const gchar *inhibit_guid = g_ptr_array_index(inhibit_guids, j);
+			g_ptr_array_add(self->inhibit_guids, g_strdup(inhibit_guid));
+		}
+	}
+
 	/* install these in the right order */
 	g_ptr_array_sort(releases, fu_engine_sort_release_device_order_release_version_cb);
 
@@ -3282,6 +3296,71 @@ fu_engine_reload(FuEngine *self, const gchar *device_id, GError **error)
 }
 
 static gboolean
+fu_engine_inhibit_device_guids(FuEngine *self, const gchar *device_id, GError **error)
+{
+	GPtrArray *inhibit_guids;
+	g_autoptr(FuDevice) device = NULL;
+
+	return TRUE;
+
+	/* the device and plugin both may have changed */
+	device = fu_engine_get_device(self, device_id, error);
+	if (device == NULL) {
+		g_prefix_error(error, "failed to get device to inhibit GUIDs: ");
+		return FALSE;
+	}
+	inhibit_guids = fu_device_get_inhibit_guids(device);
+	for (guint i = 0; inhibit_guids != NULL && i < inhibit_guids->len; i++) {
+		const gchar *guid = g_ptr_array_index(inhibit_guids, i);
+		g_autoptr(FuDevice) device_tmp =
+		    fu_device_list_get_by_guid(self->device_list, guid, NULL);
+		if (device_tmp != NULL) {
+			g_debug("%s [%s] inhibiting %s [%s]",
+				fu_device_get_name(device),
+				fu_device_get_id(device),
+				fu_device_get_name(device_tmp),
+				fu_device_get_id(device_tmp));
+			fu_device_add_problem(device_tmp, FWUPD_DEVICE_PROBLEM_IN_USE);
+			g_warning("%s", fu_device_to_string(device_tmp));
+		}
+	}
+
+	/* success */
+	return TRUE;
+}
+
+static gboolean
+fu_engine_uninhibit_device_guids(FuEngine *self, const gchar *device_id, GError **error)
+{
+	GPtrArray *inhibit_guids;
+	g_autoptr(FuDevice) device = NULL;
+
+	return TRUE;
+
+	/* the device and plugin both may have changed */
+	device = fu_engine_get_device(self, device_id, error);
+	if (device == NULL) {
+		g_prefix_error(error, "failed to get device to uninhibit GUIDs: ");
+		return FALSE;
+	}
+	inhibit_guids = fu_device_get_inhibit_guids(device);
+	for (guint i = 0; inhibit_guids != NULL && i < inhibit_guids->len; i++) {
+		const gchar *guid = g_ptr_array_index(inhibit_guids, i);
+		g_autoptr(FuDevice) device_tmp =
+		    fu_device_list_get_by_guid(self->device_list, guid, NULL);
+		if (device_tmp != NULL) {
+			g_debug("uninhibiting %s [%s]",
+				fu_device_get_name(device),
+				fu_device_get_id(device));
+			fu_device_remove_problem(device_tmp, FWUPD_DEVICE_PROBLEM_IN_USE);
+		}
+	}
+
+	/* success */
+	return TRUE;
+}
+
+static gboolean
 fu_engine_write_firmware(FuEngine *self,
 			 const gchar *device_id,
 			 GInputStream *stream_fw,
@@ -3520,6 +3599,10 @@ fu_engine_install_blob(FuEngine *self,
 			return FALSE;
 		}
 
+		/* inhibit other devices */
+		if (!fu_engine_inhibit_device_guids(self, device_id, error))
+			return FALSE;
+
 		/* detach to bootloader mode */
 		fu_engine_set_install_phase(self, FU_ENGINE_INSTALL_PHASE_DETACH);
 		if (!fu_engine_detach(self,
@@ -3544,6 +3627,10 @@ fu_engine_install_blob(FuEngine *self,
 			return FALSE;
 		}
 		fu_progress_step_done(progress_local);
+
+		/* uninhibit other devices */
+		if (!fu_engine_uninhibit_device_guids(self, device_id, error))
+			return FALSE;
 
 		/* attach into runtime mode */
 		fu_engine_set_install_phase(self, FU_ENGINE_INSTALL_PHASE_ATTACH);
@@ -7591,6 +7678,34 @@ fu_engine_backend_device_added_run_plugins(FuEngine *self, FuDevice *device, FuP
 	}
 }
 
+static gboolean
+fu_engine_check_has_inhibit_guid(FuEngine *self, FuDevice *device, GError **error)
+{
+	GPtrArray *instance_ids = fu_device_get_instance_ids(device);
+
+	/* note we can't use fu_device_get_guids as they might not be converted yet */
+	for (guint j = 0; j < self->inhibit_guids->len; j++) {
+		const gchar *inhibit_guid = g_ptr_array_index(self->inhibit_guids, j);
+		for (guint i = 0; i < instance_ids->len; i++) {
+			const gchar *instance_id = g_ptr_array_index(instance_ids, i);
+			g_autofree gchar *inhibit_guid_tmp = fwupd_guid_hash_string(instance_id);
+			if (g_strcmp0(inhibit_guid_tmp, inhibit_guid) == 0) {
+				g_set_error(error,
+					    FWUPD_ERROR,
+					    FWUPD_ERROR_INTERNAL,
+					    "device %s [%s] is inhibited by %s",
+					    fu_device_get_name(device),
+					    fu_device_get_id(device),
+					    inhibit_guid);
+				return FALSE;
+			}
+		}
+	}
+
+	/* success */
+	return TRUE;
+}
+
 static void
 fu_engine_backend_device_added(FuEngine *self, FuDevice *device, FuProgress *progress)
 {
@@ -7628,6 +7743,13 @@ fu_engine_backend_device_added(FuEngine *self, FuDevice *device, FuProgress *pro
 
 	/* check if the device needs emulation-tag */
 	fu_engine_ensure_device_emulation_tag(self, device);
+
+	/* is this inhibited by any device that's currently being installed */
+	if (!fu_engine_check_has_inhibit_guid(self, device, &error_local)) {
+		g_warning("ignoring: %s", error_local->message);
+		fu_progress_finished(progress);
+		return;
+	}
 
 	/* super useful for plugin development */
 	str2 = fu_device_to_string(FU_DEVICE(device));
@@ -8741,6 +8863,7 @@ fu_engine_idle_inhibit_changed_cb(FuIdle *idle, GParamSpec *pspec, FuEngine *sel
 	    g_hash_table_size(self->device_changed_allowlist) > 0) {
 		g_debug("clearing device-changed allowlist as transaction done");
 		g_hash_table_remove_all(self->device_changed_allowlist);
+		g_ptr_array_set_size(self->inhibit_guids, 0);
 
 		/* we might have suppressed this during the transaction, so ensure all the device
 		 * inhibits are being set up correctly */
@@ -8897,6 +9020,7 @@ fu_engine_init(FuEngine *self)
 	self->history = fu_history_new();
 	self->plugin_list = fu_plugin_list_new();
 	self->plugin_filter = g_ptr_array_new_with_free_func(g_free);
+	self->inhibit_guids = g_ptr_array_new_with_free_func(g_free);
 	self->host_security_attrs = fu_security_attrs_new();
 	self->backends = g_ptr_array_new_with_free_func((GDestroyNotify)g_object_unref);
 	self->local_monitors = g_ptr_array_new_with_free_func((GDestroyNotify)g_object_unref);
@@ -8967,6 +9091,7 @@ fu_engine_finalize(GObject *obj)
 	g_object_unref(self->device_list);
 	g_object_unref(self->jcat_context);
 	g_ptr_array_unref(self->plugin_filter);
+	g_ptr_array_unref(self->inhibit_guids);
 	g_ptr_array_unref(self->backends);
 	g_ptr_array_unref(self->local_monitors);
 	g_hash_table_unref(self->emulation_phases);

@@ -11,6 +11,7 @@ Summary = Quiche Reference Board
 # Baklava (D501)
 [USB\VID_0502&PID_1195]
 Plugin = cros_ec
+InhibitGuid = USB\VID_2BEF&PID_1009,USB\VID_2BEF&PID_1009&I2C_01
 Summary = D501 Device (Google Quiche derivative)
 
 # Gingerbread

@@ -625,6 +625,10 @@ fu_device_incorporate_problem_update_in_progress(FuDevice *self, FuDevice *donor
 		fu_device_add_problem(self, FWUPD_DEVICE_PROBLEM_UPDATE_IN_PROGRESS);
 		fu_device_remove_problem(donor, FWUPD_DEVICE_PROBLEM_UPDATE_IN_PROGRESS);
 	}
+	if (fu_device_has_problem(donor, FWUPD_DEVICE_PROBLEM_IN_USE)) {
+		g_debug("moving inhibit in-use to active device");
+		fu_device_add_problem(self, FWUPD_DEVICE_PROBLEM_IN_USE);
+	}
 }
 
 static void

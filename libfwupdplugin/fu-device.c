@@ -61,6 +61,7 @@ typedef struct {
 	GPtrArray *parent_physical_ids; /* (nullable) */
 	GPtrArray *parent_backend_ids;	/* (nullable) */
 	GPtrArray *counterpart_guids;	/* (nullable) */
+	GPtrArray *inhibit_guids;	/* (nullable) (element-type utf8) */
 	GPtrArray *events;		/* (nullable) (element-type FuDeviceEvent) */
 	guint event_idx;
 	guint remove_delay;    /* ms */
@@ -2128,6 +2129,12 @@ fu_device_set_quirk_kv(FuDevice *self, const gchar *key, const gchar *value, GEr
 			if (!fu_device_add_child_by_kv(self, sections[i], error))
 				return FALSE;
 		}
+		return TRUE;
+	}
+	if (g_strcmp0(key, FU_QUIRKS_INHIBIT_GUID) == 0) {
+		g_auto(GStrv) sections = g_strsplit(value, ",", -1);
+		for (guint i = 0; sections[i] != NULL; i++)
+			fu_device_add_inhibit_guid(self, sections[i]);
 		return TRUE;
 	}
 
@@ -4508,6 +4515,12 @@ fu_device_to_string_impl(FuDevice *self, guint idt, GString *str)
 		const gchar *name = g_ptr_array_index(priv->possible_plugins, i);
 		fwupd_codec_string_append(str, idt, "PossiblePlugin", name);
 	}
+	if (priv->inhibit_guids != NULL) {
+		for (guint i = 0; i < priv->inhibit_guids->len; i++) {
+			const gchar *guid = g_ptr_array_index(priv->inhibit_guids, i);
+			fwupd_codec_string_append(str, idt, FU_QUIRKS_INHIBIT_GUID, guid);
+		}
+	}
 	if (priv->parent_physical_ids != NULL && priv->parent_physical_ids->len > 0) {
 		g_autofree gchar *flags = fu_strjoin(",", priv->parent_physical_ids);
 		fwupd_codec_string_append(str, idt, "ParentPhysicalIds", flags);
@@ -5252,6 +5265,15 @@ fu_device_open(FuDevice *self, GError **error)
 	g_return_val_if_fail(FU_IS_DEVICE(self), FALSE);
 	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
 
+	/* another device is being updated that is incompatible with opening the device */
+	if (fu_device_has_problem(self, FWUPD_DEVICE_PROBLEM_IN_USE)) {
+		g_set_error_literal(error,
+				    FWUPD_ERROR,
+				    FWUPD_ERROR_NOT_SUPPORTED,
+				    "is in-use by another device");
+		return FALSE;
+	}
+
 	/* use parent */
 	if (fu_device_has_internal_flag(self, FU_DEVICE_INTERNAL_FLAG_USE_PARENT_FOR_OPEN)) {
 		FuDevice *parent = fu_device_get_parent(self);
@@ -5915,6 +5937,12 @@ fu_device_incorporate(FuDevice *self, FuDevice *donor)
 			fu_device_add_counterpart_guid(self, tmp);
 		}
 	}
+	if (priv_donor->inhibit_guids != NULL) {
+		for (guint i = 0; i < priv_donor->inhibit_guids->len; i++) {
+			const gchar *tmp = g_ptr_array_index(priv_donor->inhibit_guids, i);
+			fu_device_add_inhibit_guid(self, tmp);
+		}
+	}
 	if (priv_donor->metadata != NULL) {
 		g_hash_table_iter_init(&iter, priv_donor->metadata);
 		while (g_hash_table_iter_next(&iter, &key, &value)) {
@@ -6297,6 +6325,105 @@ fu_device_ensure_from_component(FuDevice *self, XbNode *component)
 		fu_device_ensure_from_component_verfmt(self, component);
 	if (fu_device_has_internal_flag(self, FU_DEVICE_INTERNAL_FLAG_MD_SET_FLAGS))
 		fu_device_ensure_from_component_flags(self, component);
+}
+
+/**
+ * fu_device_add_inhibit_guid:
+ * @self: a device
+ * @guid: a GUID, or something that can be converted to be a GUID
+ *
+ * Finds if a specific GUID inhibit has been added.
+ *
+ * Returns: %TRUE if found
+ *
+ * Since: 1.9.22
+ **/
+gboolean
+fu_device_has_inhibit_guid(FuDevice *self, const gchar *guid)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_autofree gchar *guid_safe = NULL;
+
+	g_return_val_if_fail(FU_IS_DEVICE(self), FALSE);
+	g_return_val_if_fail(guid != NULL, FALSE);
+
+	/* sanity check */
+	if (priv->inhibit_guids == NULL)
+		return FALSE;
+
+	/* ensure is a GUID */
+	if (fwupd_guid_is_valid(guid)) {
+		guid_safe = g_strdup(guid);
+	} else {
+		guid_safe = fwupd_guid_hash_string(guid);
+	}
+
+	/* find */
+	for (guint i = 0; i < priv->inhibit_guids->len; i++) {
+		const gchar *guid_tmp = g_ptr_array_index(priv->inhibit_guids, i);
+		if (g_strcmp0(guid_tmp, guid_safe) == 0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/**
+ * fu_device_add_inhibit_guid:
+ * @self: a device
+ * @guid: a GUID, or something that can be converted to be a GUID
+ *
+ * Adds a GUID inhibit.
+ *
+ * This means that this automatically causes @guid to be inhibited for the duration of the
+ * device update.
+ *
+ * Since: 1.9.22
+ **/
+void
+fu_device_add_inhibit_guid(FuDevice *self, const gchar *guid)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_autofree gchar *guid_safe = NULL;
+
+	g_return_if_fail(FU_IS_DEVICE(self));
+	g_return_if_fail(guid != NULL);
+
+	/* ensure is a GUID */
+	if (fwupd_guid_is_valid(guid)) {
+		guid_safe = g_strdup(guid);
+	} else {
+		guid_safe = fwupd_guid_hash_string(guid);
+	}
+
+	/* does already exist */
+	if (priv->inhibit_guids == NULL) {
+		priv->inhibit_guids = g_ptr_array_new_with_free_func(g_free);
+	} else {
+		for (guint i = 0; i < priv->inhibit_guids->len; i++) {
+			const gchar *guid_tmp = g_ptr_array_index(priv->inhibit_guids, i);
+			if (g_strcmp0(guid_tmp, guid_safe) == 0)
+				return;
+		}
+	}
+	g_ptr_array_add(priv->inhibit_guids, g_steal_pointer(&guid_safe));
+}
+
+/**
+ * fu_device_get_inhibit_guids:
+ * @self: a #FuDevice
+ *
+ * Gets all the plugin inhibits.
+ *
+ * Returns: (transfer none) (element-type utf8) (nullable): a list of plugin inhibits, or %NULL
+ *
+ * Since: 1.9.22
+ **/
+GPtrArray *
+fu_device_get_inhibit_guids(FuDevice *self)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_return_val_if_fail(FU_IS_DEVICE(self), NULL);
+	return priv->inhibit_guids;
 }
 
 /**
@@ -7244,6 +7371,8 @@ fu_device_finalize(GObject *object)
 		g_ptr_array_unref(priv->parent_backend_ids);
 	if (priv->counterpart_guids != NULL)
 		g_ptr_array_unref(priv->counterpart_guids);
+	if (priv->inhibit_guids != NULL)
+		g_ptr_array_unref(priv->inhibit_guids);
 	if (priv->events != NULL)
 		g_ptr_array_unref(priv->events);
 	if (priv->private_flag_items != NULL)
