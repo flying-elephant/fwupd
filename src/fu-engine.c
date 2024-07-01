@@ -3282,6 +3282,60 @@ fu_engine_reload(FuEngine *self, const gchar *device_id, GError **error)
 }
 
 static gboolean
+fu_engine_inhibit_plugins(FuEngine *self, const gchar *device_id, GError **error)
+{
+	GPtrArray *plugin_inhibits;
+	g_autoptr(FuDevice) device = NULL;
+
+	/* the device and plugin both may have changed */
+	device = fu_engine_get_device(self, device_id, error);
+	if (device == NULL) {
+		g_prefix_error(error, "failed to get device to inhibit plugins: ");
+		return FALSE;
+	}
+	plugin_inhibits = fu_device_get_plugin_inhibits(device);
+	for (guint i = 0; plugin_inhibits != NULL && i < plugin_inhibits->len; i++) {
+		const gchar *plugin_name = g_ptr_array_index(plugin_inhibits, i);
+		FuPlugin *plugin_tmp =
+		    fu_plugin_list_find_by_name(self->plugin_list, plugin_name, NULL);
+		if (plugin_tmp != NULL) {
+			g_debug("inhibiting plugin %s", plugin_name);
+			fu_plugin_add_flag(plugin_tmp, FWUPD_PLUGIN_FLAG_INHIBITED);
+		}
+	}
+
+	/* success */
+	return TRUE;
+}
+
+static gboolean
+fu_engine_uninhibit_plugins(FuEngine *self, const gchar *device_id, GError **error)
+{
+	GPtrArray *plugin_inhibits;
+	g_autoptr(FuDevice) device = NULL;
+
+	/* the device and plugin both may have changed */
+	device = fu_engine_get_device(self, device_id, error);
+	if (device == NULL) {
+		g_prefix_error(error, "failed to get device to uninhibit plugins: ");
+		return FALSE;
+	}
+	plugin_inhibits = fu_device_get_plugin_inhibits(device);
+	for (guint i = 0; plugin_inhibits != NULL && i < plugin_inhibits->len; i++) {
+		const gchar *plugin_name = g_ptr_array_index(plugin_inhibits, i);
+		FuPlugin *plugin_tmp =
+		    fu_plugin_list_find_by_name(self->plugin_list, plugin_name, NULL);
+		if (plugin_tmp != NULL) {
+			g_debug("uninhibiting plugin %s", plugin_name);
+			fu_plugin_remove_flag(plugin_tmp, FWUPD_PLUGIN_FLAG_INHIBITED);
+		}
+	}
+
+	/* success */
+	return TRUE;
+}
+
+static gboolean
 fu_engine_write_firmware(FuEngine *self,
 			 const gchar *device_id,
 			 GInputStream *stream_fw,
@@ -3520,6 +3574,10 @@ fu_engine_install_blob(FuEngine *self,
 			return FALSE;
 		}
 
+		/* inhibit other plugins */
+		if (!fu_engine_inhibit_plugins(self, device_id, error))
+			return FALSE;
+
 		/* detach to bootloader mode */
 		fu_engine_set_install_phase(self, FU_ENGINE_INSTALL_PHASE_DETACH);
 		if (!fu_engine_detach(self,
@@ -3544,6 +3602,10 @@ fu_engine_install_blob(FuEngine *self,
 			return FALSE;
 		}
 		fu_progress_step_done(progress_local);
+
+		/* uninhibit other plugins */
+		if (!fu_engine_uninhibit_plugins(self, device_id, error))
+			return FALSE;
 
 		/* attach into runtime mode */
 		fu_engine_set_install_phase(self, FU_ENGINE_INSTALL_PHASE_ATTACH);
@@ -7539,6 +7601,16 @@ fu_engine_backend_device_added_run_plugin(FuEngine *self,
 	plugin = fu_plugin_list_find_by_name(self->plugin_list, plugin_name, error);
 	if (plugin == NULL)
 		return FALSE;
+
+	/* another plugin has told us not to run */
+	if (fu_plugin_has_flag(plugin, FWUPD_PLUGIN_FLAG_INHIBITED)) {
+		g_set_error(error,
+			    FWUPD_ERROR,
+			    FWUPD_ERROR_INTERNAL,
+			    "ignoring device added for inhibited plugin %s",
+			    plugin_name);
+		return FALSE;
+	}
 
 	/* run the ->probe() then ->setup() vfuncs */
 	if (!fu_plugin_runner_backend_device_added(plugin, device, progress, error)) {
