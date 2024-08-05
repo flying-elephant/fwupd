@@ -853,7 +853,7 @@ fu_weida_raw_device_write_firmware(FuDevice *device,
 				   GError **error)
 {
 	FuWeidaRawDevice *self = FU_WEIDA_RAW_DEVICE(device);
-
+	// TODO: add other weida devices
 	/* sanity check */
 	if (self->dev_type != FU_WEIDA_RAW_FW8760) {
 		g_set_error(error,
