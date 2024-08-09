@@ -24,18 +24,19 @@ fu_weida_raw_firmware_parse(FuFirmware *firmware,
 {
 	g_autoptr(FuWeidaRiffHeader) st_he = NULL;
 	g_autoptr(FuWeidaChunkHeader) st_hed1 = NULL;
+
 	st_he = fu_weida_riff_header_parse_stream(stream, offset, error);
 	if (st_he == NULL)
 		return FALSE;
 	offset += FU_WEIDA_RIFF_HEADER_SIZE;
 
+	/* to add wdt8790 or newer devices, we should update the parser to parse wif2 format */
 	st_hed1 = fu_weida_chunk_header_parse_stream(stream, offset, error);
 	if (st_hed1 == NULL)
 		return FALSE;
-	offset += fu_weida_chunk_header_get_size(st_hed1);
-	/* TODO: if we need add wdt8790 or newer devices,
- 		 we should update the paser to parse wif2 format */
+
 	/* parse all sections */
+	offset += fu_weida_chunk_header_get_size(st_hed1);
 	while (offset < fu_weida_riff_header_get_file_size(st_he)) {
 		g_autoptr(FuWeidaChunkWif) st_wif = NULL;
 		g_autoptr(GInputStream) partial_stream = NULL;
