@@ -79,9 +79,9 @@ struct FuWeidaRawCmdReboot {
 struct FuWeidaRawCmdCalculateFlashChecksum {
     cmd: FuWeidaRawCmd8760 == Command9,
     subcmd: FuWeidaRawCmd8760 == CalculateFlashChecksum,
-    flash_address: u32le,
-    size: u32le,
-    init_sum: u16le == 0x0,
+    flash_address: u24le,
+    size: u24le,
+    init_sum: u32le == 0x0,
 }
 
 #[derive(New)]

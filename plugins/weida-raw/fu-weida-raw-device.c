@@ -353,7 +353,8 @@ fu_weida_raw_w8760_flash_write_chunk(FuWeidaRawDevice *self, FuChunk *chk, GErro
 
 	/* no point */
 	if (fu_weida_raw_block_is_empty(fu_chunk_get_data(chk), fu_chunk_get_data_sz(chk))) {
-		g_debug("already empty, no need to write: 0x%x", (guint)fu_chunk_get_address(chk));
+		g_debug("already empty, no need to write: 0x%x",
+			(guint32)fu_chunk_get_address(chk));
 		return TRUE;
 	}
 
@@ -399,7 +400,7 @@ fu_weida_raw_w8760_checksum_flash(FuWeidaRawDevice *self,
 				  guint32 size,
 				  GError **error)
 {
-	guint8 buf[4] = {0}; // FIXME not 2?
+	guint8 buf[10] = {0};
 	g_autoptr(FuWeidaRawCmdCalculateFlashChecksum) st =
 	    fu_weida_raw_cmd_calculate_flash_checksum_new();
 
@@ -414,7 +415,7 @@ fu_weida_raw_w8760_checksum_flash(FuWeidaRawDevice *self,
 				  NULL,
 				  error))
 		return FALSE;
-	if (fu_weida_raw_w8760_read_buf_response(self, buf, 2, error) <= 0)
+	if (fu_weida_raw_w8760_read_buf_response(self, buf, 10, error) <= 0)
 		return FALSE;
 
 	*pchksum = fu_memread_uint16(buf, G_LITTLE_ENDIAN);
@@ -440,10 +441,15 @@ fu_weida_raw_w8760_flash_write_data(FuWeidaRawDevice *self,
 	chunks = fu_chunk_array_new(g_bytes_get_data(blob, NULL),
 				    g_bytes_get_size(blob),
 				    address,
-				    FU_WEIDA_RAW_FLASH_PAGE_SIZE,
+				    0,
 				    FU_WEIDA_RAW_USB_MAX_PAYLOAD_SIZE - 2);
+
 	for (guint i = 0; i < chunks->len; i++) {
 		FuChunk *chk = g_ptr_array_index(chunks, i);
+		g_debug("address: 0x%x", (guint32)fu_chunk_get_address(chk));
+
+		g_debug("data size 0x%x", fu_chunk_get_data_sz(chk));
+
 		if (chk == NULL)
 			return FALSE;
 		if (!fu_weida_raw_w8760_flash_write_chunk(self, chk, error))
