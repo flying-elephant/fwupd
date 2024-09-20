@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2023 Logitech, Inc.
+ * Copyright 2023 Logitech, Inc.
  *
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
@@ -19,8 +19,9 @@
 #include "fu-logitech-tap-sensor-device.h"
 
 #define FU_LOGITECH_TAP_SENSOR_DEVICE_IOCTL_TIMEOUT 50000 /* ms */
-#define HID_SET_DATA_LEN			    5
-#define HID_GET_DATA_LEN			    5
+
+#define HID_SET_DATA_LEN 5
+#define HID_GET_DATA_LEN 5
 
 #ifndef HIDIOCGINPUT
 #define HIDIOCGINPUT(len) _IOC(_IOC_READ, 'H', 0x0A, len)
@@ -90,16 +91,15 @@ static gboolean
 fu_logitech_tap_sensor_device_enable_tde(FuDevice *device, GError **error)
 {
 	FuLogitechTapSensorDevice *self = FU_LOGITECH_TAP_SENSOR_DEVICE(device);
-	guint8 buf[HID_SET_DATA_LEN] = {
-	    kHidMcuTdeReportId,
-	    kHidMcuTdeModeSelector,
-	    kHidMcuTdeModeEnable,
-	    0,
-	    0,
-	};
+	g_autoptr(FuStructLogitechTapSensorHidReq) st = fu_struct_logitech_tap_sensor_hid_req_new();
+	fu_struct_logitech_tap_sensor_hid_req_set_cmd(st,
+						      FU_STRUCT_LOGITECH_TAP_TOUCH_HID_SET_CMD_TDE);
+	fu_struct_logitech_tap_sensor_hid_req_set_payload_byte1(st, kHidMcuTdeModeSelector);
+	fu_struct_logitech_tap_sensor_hid_req_set_payload_byte2(st, kHidMcuTdeModeEnable);
+
 	return fu_hidraw_device_set_feature(FU_HIDRAW_DEVICE(self),
-					    buf,
-					    sizeof(buf),
+					    st_req->data,
+					    st_req->len,
 					    FU_UDEV_DEVICE_IOCTL_FLAG_RETRY,
 					    error);
 }
@@ -108,16 +108,15 @@ static gboolean
 fu_logitech_tap_sensor_device_disable_tde(FuDevice *device, GError **error)
 {
 	FuLogitechTapSensorDevice *self = FU_LOGITECH_TAP_SENSOR_DEVICE(device);
-	guint8 buf[HID_SET_DATA_LEN] = {
-	    kHidMcuTdeReportId,
-	    kHidMcuTdeModeSelector,
-	    kHidMcuTdeModeDisable,
-	    0,
-	    0,
-	};
+	g_autoptr(FuStructLogitechTapSensorHidReq) st = fu_struct_logitech_tap_sensor_hid_req_new();
+	fu_struct_logitech_tap_sensor_hid_req_set_cmd(st,
+						      FU_STRUCT_LOGITECH_TAP_TOUCH_HID_SET_CMD_TDE);
+	fu_struct_logitech_tap_sensor_hid_req_set_payload_byte1(st, kHidMcuTdeModeSelector);
+	fu_struct_logitech_tap_sensor_hid_req_set_payload_byte2(st, kHidMcuTdeModeDisable);
+
 	return fu_hidraw_device_set_feature(FU_HIDRAW_DEVICE(self),
-					    buf,
-					    sizeof(buf),
+					    st_req->data,
+					    st_req->len,
 					    FU_UDEV_DEVICE_IOCTL_FLAG_RETRY,
 					    error);
 }
@@ -282,6 +281,7 @@ static gboolean
 fu_logitech_tap_sensor_device_setup(FuDevice *device, GError **error)
 {
 	FuLogitechTapSensorDevice *self = FU_LOGITECH_TAP_SENSOR_DEVICE(device);
+
 	if (!fu_logitech_tap_sensor_device_set_version(self, error))
 		return FALSE;
 	if (!fu_logitech_tap_sensor_device_set_serial(self, error))
@@ -312,6 +312,7 @@ fu_logitech_tap_sensor_device_init(FuLogitechTapSensorDevice *self)
 	fu_device_set_version_format(FU_DEVICE(self), FWUPD_VERSION_FORMAT_TRIPLET);
 	fu_device_add_flag(FU_DEVICE(self), FWUPD_DEVICE_FLAG_UPDATABLE);
 	fu_device_add_flag(FU_DEVICE(self), FWUPD_DEVICE_FLAG_SIGNED_PAYLOAD);
+	fu_device_add_vendor_id(FU_DEVICE(self), "USB:0x0872");
 	fu_device_retry_set_delay(FU_DEVICE(self), 1000);
 	fu_udev_device_add_open_flag(FU_UDEV_DEVICE(self), FU_IO_CHANNEL_OPEN_FLAG_READ);
 	fu_udev_device_add_open_flag(FU_UDEV_DEVICE(self), FU_IO_CHANNEL_OPEN_FLAG_WRITE);
