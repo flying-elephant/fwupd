@@ -1,0 +1,66 @@
+# TODO: determine which VID goes with which PID
+# TODO: determine which are bootloader mode
+
+[USB\VID_2345&PID_E018]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_2345&PID_E01C]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_2345&PID_E01D]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_2345&PID_E01E]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_2345&PID_6182]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_2345&PID_6183]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_2345&PID_6184]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_2345&PID_6185]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_17EF&PID_E01B]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_17EF&PID_E01C]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_17EF&PID_E01D]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_17EF&PID_E01E]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_17EF&PID_6182]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_17EF&PID_6183]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_17EF&PID_6184]
+Plugin = legion_hid
+GType = FuLegionHidDevice
+
+[USB\VID_17EF&PID_6185]
+Plugin = legion_hid
+GType = FuLegionHidDevice
