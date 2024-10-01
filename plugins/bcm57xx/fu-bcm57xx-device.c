@@ -17,9 +17,6 @@
 #include <linux/sockios.h>
 #include <net/if.h>
 #endif
-#ifdef HAVE_IOCTL_H
-#include <sys/ioctl.h>
-#endif
 #ifdef HAVE_SOCKET_H
 #include <sys/socket.h>
 #endif
@@ -33,12 +30,12 @@
 #define FU_BCM57XX_BLOCK_SZ 0x4000 /* 16kb */
 
 struct _FuBcm57xxDevice {
-	FuUdevDevice parent_instance;
+	FuPciDevice parent_instance;
 	gchar *ethtool_iface;
 	int ethtool_fd;
 };
 
-G_DEFINE_TYPE(FuBcm57xxDevice, fu_bcm57xx_device, FU_TYPE_UDEV_DEVICE)
+G_DEFINE_TYPE(FuBcm57xxDevice, fu_bcm57xx_device, FU_TYPE_PCI_DEVICE)
 
 enum { PROP_0, PROP_IFACE, PROP_LAST };
 
@@ -64,7 +61,6 @@ fu_bcm57xx_device_nvram_write(FuBcm57xxDevice *self,
 {
 #ifdef HAVE_ETHTOOL_H
 	gsize eepromsz;
-	gint rc = -1;
 	struct ifreq ifr = {0};
 	g_autofree struct ethtool_eeprom *eeprom = NULL;
 
@@ -97,21 +93,15 @@ fu_bcm57xx_device_nvram_write(FuBcm57xxDevice *self,
 	memcpy(eeprom->data, buf, eeprom->len); /* nocheck:blocked */
 	strncpy(ifr.ifr_name, self->ethtool_iface, IFNAMSIZ - 1);
 	ifr.ifr_data = (char *)eeprom;
-#ifdef HAVE_IOCTL_H
-	rc = ioctl(self->ethtool_fd, SIOCETHTOOL, &ifr);
-#else
-	g_set_error_literal(error,
-			    FWUPD_ERROR,
-			    FWUPD_ERROR_NOT_SUPPORTED,
-			    "Not supported as <sys/ioctl.h> not found");
-	return FALSE;
-#endif
-	if (rc < 0) {
-		g_set_error(error,
-			    FWUPD_ERROR,
-			    FWUPD_ERROR_NOT_SUPPORTED,
-			    "cannot write eeprom [%i]",
-			    rc);
+	if (!fu_udev_device_ioctl(FU_UDEV_DEVICE(self),
+				  SIOCETHTOOL,
+				  (guint8 *)&ifr,
+				  sizeof(ifr),
+				  NULL,
+				  500, /* ms */
+				  FU_UDEV_DEVICE_IOCTL_FLAG_NONE,
+				  error)) {
+		g_prefix_error(error, "cannot write eeprom: ");
 		return FALSE;
 	}
 
@@ -135,7 +125,6 @@ fu_bcm57xx_device_nvram_read(FuBcm57xxDevice *self,
 {
 #ifdef HAVE_ETHTOOL_H
 	gsize eepromsz;
-	gint rc = -1;
 	struct ifreq ifr = {0};
 	g_autofree struct ethtool_eeprom *eeprom = NULL;
 
@@ -166,21 +155,15 @@ fu_bcm57xx_device_nvram_read(FuBcm57xxDevice *self,
 	eeprom->offset = address;
 	strncpy(ifr.ifr_name, self->ethtool_iface, IFNAMSIZ - 1);
 	ifr.ifr_data = (char *)eeprom;
-#ifdef HAVE_IOCTL_H
-	rc = ioctl(self->ethtool_fd, SIOCETHTOOL, &ifr);
-#else
-	g_set_error_literal(error,
-			    FWUPD_ERROR,
-			    FWUPD_ERROR_NOT_SUPPORTED,
-			    "Not supported as <sys/ioctl.h> not found");
-	return FALSE;
-#endif
-	if (rc < 0) {
-		g_set_error(error,
-			    FWUPD_ERROR,
-			    FWUPD_ERROR_NOT_SUPPORTED,
-			    "cannot read eeprom [%i]",
-			    rc);
+	if (!fu_udev_device_ioctl(FU_UDEV_DEVICE(self),
+				  SIOCETHTOOL,
+				  (guint8 *)&ifr,
+				  sizeof(ifr),
+				  NULL,
+				  500, /* ms */
+				  FU_UDEV_DEVICE_IOCTL_FLAG_NONE,
+				  error)) {
+		g_prefix_error(error, "cannot read eeprom: ");
 		return FALSE;
 	}
 
@@ -210,7 +193,6 @@ static gboolean
 fu_bcm57xx_device_nvram_check(FuBcm57xxDevice *self, GError **error)
 {
 #ifdef HAVE_ETHTOOL_H
-	gint rc = -1;
 	struct ethtool_drvinfo drvinfo = {0};
 	struct ifreq ifr = {0};
 
@@ -227,21 +209,15 @@ fu_bcm57xx_device_nvram_check(FuBcm57xxDevice *self, GError **error)
 	drvinfo.cmd = ETHTOOL_GDRVINFO;
 	strncpy(ifr.ifr_name, self->ethtool_iface, IFNAMSIZ - 1);
 	ifr.ifr_data = (char *)&drvinfo;
-#ifdef HAVE_IOCTL_H
-	rc = ioctl(self->ethtool_fd, SIOCETHTOOL, &ifr);
-#else
-	g_set_error_literal(error,
-			    FWUPD_ERROR,
-			    FWUPD_ERROR_NOT_SUPPORTED,
-			    "Not supported as <sys/ioctl.h> not found");
-	return FALSE;
-#endif
-	if (rc < 0) {
-		g_set_error(error,
-			    FWUPD_ERROR,
-			    FWUPD_ERROR_NOT_SUPPORTED,
-			    "cannot get driver information [%i]",
-			    rc);
+	if (!fu_udev_device_ioctl(FU_UDEV_DEVICE(self),
+				  SIOCETHTOOL,
+				  (guint8 *)&ifr,
+				  sizeof(ifr),
+				  NULL,
+				  500, /* ms */
+				  FU_UDEV_DEVICE_IOCTL_FLAG_NONE,
+				  error)) {
+		g_prefix_error(error, "cannot get driver information: ");
 		return FALSE;
 	}
 	g_debug("FW version %s", drvinfo.fw_version);
@@ -250,8 +226,8 @@ fu_bcm57xx_device_nvram_check(FuBcm57xxDevice *self, GError **error)
 	if (drvinfo.eedump_len == fu_device_get_firmware_size_max(FU_DEVICE(self)) * 2) {
 		g_autofree gchar *subsys =
 		    g_strdup_printf("%04X%04X",
-				    fu_udev_device_get_subsystem_vendor(FU_UDEV_DEVICE(self)),
-				    fu_udev_device_get_subsystem_model(FU_UDEV_DEVICE(self)));
+				    fu_pci_device_get_subsystem_vid(FU_PCI_DEVICE(self)),
+				    fu_pci_device_get_subsystem_pid(FU_PCI_DEVICE(self)));
 		g_debug("auto-sizing expected EEPROM size for OEM SUBSYS %s", subsys);
 		fu_device_set_firmware_size(FU_DEVICE(self), drvinfo.eedump_len);
 	} else if (drvinfo.eedump_len != fu_device_get_firmware_size_max(FU_DEVICE(self))) {
@@ -354,8 +330,7 @@ fu_bcm57xx_device_prepare_firmware(FuDevice *device,
 		guint16 vid = fu_bcm57xx_firmware_get_vendor(FU_BCM57XX_FIRMWARE(firmware_tmp));
 		guint16 did = fu_bcm57xx_firmware_get_model(FU_BCM57XX_FIRMWARE(firmware_tmp));
 		if (vid != 0x0 && did != 0x0 &&
-		    (fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)) != vid ||
-		     fu_udev_device_get_model(FU_UDEV_DEVICE(device)) != did)) {
+		    (fu_device_get_vid(device) != vid || fu_device_get_pid(device) != did)) {
 			g_set_error(error,
 				    FWUPD_ERROR,
 				    FWUPD_ERROR_NOT_SUPPORTED,
@@ -363,8 +338,8 @@ fu_bcm57xx_device_prepare_firmware(FuDevice *device,
 				    "got: %04X:%04X expected %04X:%04X",
 				    vid,
 				    did,
-				    fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)),
-				    fu_udev_device_get_model(FU_UDEV_DEVICE(device)));
+				    fu_device_get_vid(device),
+				    fu_device_get_pid(device));
 			return NULL;
 		}
 	}

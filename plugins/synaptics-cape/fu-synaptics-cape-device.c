@@ -638,8 +638,7 @@ fu_synaptics_cape_device_prepare_firmware(FuDevice *device,
 		const guint16 pid =
 		    fu_synaptics_cape_firmware_get_pid(FU_SYNAPTICS_CAPE_FIRMWARE(firmware));
 		if (vid != 0x0 && pid != 0x0 &&
-		    (fu_usb_device_get_vid(FU_USB_DEVICE(self)) != vid ||
-		     fu_usb_device_get_pid(FU_USB_DEVICE(self)) != pid)) {
+		    (fu_device_get_vid(device) != vid || fu_device_get_pid(device) != pid)) {
 			g_set_error(error,
 				    FWUPD_ERROR,
 				    FWUPD_ERROR_NOT_SUPPORTED,
@@ -647,8 +646,8 @@ fu_synaptics_cape_device_prepare_firmware(FuDevice *device,
 				    "got: %04X:%04X expected %04X:%04X",
 				    vid,
 				    pid,
-				    fu_usb_device_get_vid(FU_USB_DEVICE(self)),
-				    fu_usb_device_get_pid(FU_USB_DEVICE(self)));
+				    fu_device_get_vid(device),
+				    fu_device_get_pid(device));
 			return NULL;
 		}
 	}

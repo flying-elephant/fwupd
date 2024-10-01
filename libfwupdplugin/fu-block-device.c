@@ -40,10 +40,6 @@ fu_block_device_probe(FuDevice *device, GError **error)
 		/* copy the VID and PID, and reconstruct compatible IDs */
 		if (!fu_device_probe(usb_device, error))
 			return FALSE;
-		fu_udev_device_set_vendor(FU_UDEV_DEVICE(device),
-					  fu_usb_device_get_vid(FU_USB_DEVICE(usb_device)));
-		fu_udev_device_set_model(FU_UDEV_DEVICE(device),
-					 fu_usb_device_get_pid(FU_USB_DEVICE(usb_device)));
 		fu_device_add_instance_str(device,
 					   "VEN",
 					   fu_device_get_instance_str(usb_device, "VID"));
@@ -59,7 +55,11 @@ fu_block_device_probe(FuDevice *device, GError **error)
 			return FALSE;
 		if (!fu_device_build_instance_id(device, error, "BLOCK", "VEN", "DEV", NULL))
 			return FALSE;
-		fu_device_incorporate_vendor_ids(device, usb_device);
+		fu_device_incorporate(device,
+				      usb_device,
+				      FU_DEVICE_INCORPORATE_FLAG_VENDOR_IDS |
+					  FU_DEVICE_INCORPORATE_FLAG_VID |
+					  FU_DEVICE_INCORPORATE_FLAG_PID);
 
 		/* USB devpath as physical ID */
 		physical_id =

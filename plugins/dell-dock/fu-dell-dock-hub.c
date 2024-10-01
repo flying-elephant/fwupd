@@ -33,12 +33,12 @@ fu_dell_dock_hub_add_instance(FuDevice *device, guint8 dock_type)
 
 	if (dock_type == DOCK_BASE_TYPE_ATOMIC) {
 		devid = g_strdup_printf("USB\\VID_%04X&PID_%04X&atomic_hub",
-					(guint)fu_usb_device_get_vid(FU_USB_DEVICE(device)),
-					(guint)fu_usb_device_get_pid(FU_USB_DEVICE(device)));
+					(guint)fu_device_get_vid(device),
+					(guint)fu_device_get_pid(device));
 	} else {
 		devid = g_strdup_printf("USB\\VID_%04X&PID_%04X&hub",
-					(guint)fu_usb_device_get_vid(FU_USB_DEVICE(device)),
-					(guint)fu_usb_device_get_pid(FU_USB_DEVICE(device)));
+					(guint)fu_device_get_vid(device),
+					(guint)fu_device_get_pid(device));
 	}
 	fu_device_add_instance_id(device, devid);
 }
@@ -226,6 +226,6 @@ FuDellDockHub *
 fu_dell_dock_hub_new(FuUsbDevice *device)
 {
 	FuDellDockHub *self = g_object_new(FU_TYPE_DELL_DOCK_HUB, NULL);
-	fu_device_incorporate(FU_DEVICE(self), FU_DEVICE(device));
+	fu_device_incorporate(FU_DEVICE(self), FU_DEVICE(device), FU_DEVICE_INCORPORATE_FLAG_ALL);
 	return self;
 }

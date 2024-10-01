@@ -398,7 +398,7 @@ fu_corsair_bp_activate_firmware(FuCorsairBp *self, FuFirmware *firmware, GError 
 		return FALSE;
 	}
 
-	crc = fu_crc32(FU_CRC32_KIND_MPEG2, firmware_raw, firmware_size);
+	crc = fu_crc32(FU_CRC_KIND_B32_MPEG2, firmware_raw, firmware_size);
 	fu_memwrite_uint32(&cmd[CORSAIR_OFFSET_CMD_CRC], crc, G_LITTLE_ENDIAN);
 
 	return fu_corsair_bp_command(self, cmd, CORSAIR_ACTIVATION_TIMEOUT, TRUE, error);
@@ -447,7 +447,9 @@ fu_corsair_bp_new(FuUsbDevice *usb_device, gboolean is_subdevice)
 {
 	FuCorsairBp *self = g_object_new(FU_TYPE_CORSAIR_BP, NULL);
 
-	fu_device_incorporate(FU_DEVICE(self), FU_DEVICE(usb_device));
+	fu_device_incorporate(FU_DEVICE(self),
+			      FU_DEVICE(usb_device),
+			      FU_DEVICE_INCORPORATE_FLAG_ALL);
 	if (is_subdevice) {
 		self->destination = FU_CORSAIR_BP_DESTINATION_SUBDEVICE;
 	} else {

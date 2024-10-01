@@ -886,7 +886,9 @@ fu_jabra_gnp_device_add_child(FuDevice *device, guint dfu_pid, GError **error)
 	/* prohibit to close parent's communication descriptor */
 	fu_device_add_private_flag(FU_DEVICE(child), FU_DEVICE_PRIVATE_FLAG_USE_PARENT_FOR_OPEN);
 
-	fu_device_set_physical_id(FU_DEVICE(child), fu_device_get_physical_id(FU_DEVICE(self)));
+	fu_device_incorporate(FU_DEVICE(child),
+			      FU_DEVICE(self),
+			      FU_DEVICE_INCORPORATE_FLAG_PHYSICAL_ID);
 	fu_device_set_logical_id(FU_DEVICE(child), "ota_device");
 
 	if (!fu_device_setup(FU_DEVICE(child), error)) {
@@ -894,9 +896,7 @@ fu_jabra_gnp_device_add_child(FuDevice *device, guint dfu_pid, GError **error)
 		return FALSE;
 	}
 
-	fu_device_add_instance_u16(FU_DEVICE(child),
-				   "VID",
-				   fu_usb_device_get_vid(FU_USB_DEVICE(self)));
+	fu_device_add_instance_u16(FU_DEVICE(child), "VID", fu_device_get_vid(FU_DEVICE(self)));
 	fu_device_add_instance_u16(FU_DEVICE(child), "PID", dfu_pid);
 	if (!fu_device_build_instance_id_full(FU_DEVICE(child),
 					      FU_DEVICE_INSTANCE_FLAG_QUIRKS |

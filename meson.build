@@ -26,10 +26,8 @@ if git.found()
     source_version = fwupd_version
   endif
   tag = run_command([git, 'describe', '--exact-match'], check: false).returncode() == 0
-else
-  source_version = fwupd_version
+  conf.set_quoted('SOURCE_VERSION', source_version)
 endif
-conf.set_quoted('SOURCE_VERSION', source_version)
 
 # libtool versioning - this applies to libfwupd
 #
@@ -240,6 +238,9 @@ conf.set_quoted('LIBUSB_VERSION', libusb.version())
 if cc.has_header_symbol('libusb.h', 'libusb_set_option', dependencies: libusb)
   conf.set('HAVE_LIBUSB_SET_OPTION', '1')
 endif
+if cc.has_header_symbol('libusb.h', 'libusb_init_context', dependencies: libusb)
+  conf.set('HAVE_LIBUSB_INIT_CONTEXT', '1')
+endif
 if cc.has_header_symbol('libusb.h', 'libusb_get_parent', dependencies: libusb)
   conf.set('HAVE_LIBUSB_GET_PARENT', '1')
 endif
@@ -266,6 +267,10 @@ valgrind = dependency('valgrind', required: false)
 libcurl = dependency('libcurl', version: '>= 7.62.0', required: get_option('curl'))
 if libcurl.found()
   conf.set('HAVE_LIBCURL', '1')
+endif
+libdrm = dependency('libdrm', required: false)
+if libdrm.found()
+  conf.set('HAVE_LIBDRM' , '1')
 endif
 polkit = dependency('polkit-gobject-1', version: '>= 0.114',
          required: get_option('polkit').disable_auto_if(host_machine.system() != 'linux'))
@@ -296,6 +301,9 @@ if vendor_ids_dir == ''
   endif
   if not fs.is_file(join_paths(vendor_ids_dir, 'usb.ids'))
     vendor_ids_dir = '/usr/share/misc'
+  endif
+  if not fs.is_file(join_paths(vendor_ids_dir, 'usb.ids'))
+    vendor_ids_dir = '/usr/local/var/homebrew/linked/usb.ids/share/misc'
   endif
   if not fs.is_file(join_paths(vendor_ids_dir, 'usb.ids'))
     error('could not auto-detect -Dvendor_ids_dir=')
@@ -381,6 +389,9 @@ if cc.has_header('linux/i2c-dev.h')
 endif
 if cc.has_header('linux/mei.h')
   conf.set('HAVE_MEI_H', '1')
+endif
+if cc.has_header('linux/videodev2.h')
+  conf.set('HAVE_VIDEODEV2_H', '1')
 endif
 if cc.has_header('mtd/mtd-user.h')
   conf.set('HAVE_MTD_USER_H', '1')

@@ -146,3 +146,11 @@ Remember: Plugins should be upstream!
 * `FU_UDEV_DEVICE_FLAG_VENDOR_FROM_PARENT`: Use `fu_device_get_backend_parent_with_subsystem()` and copy properties instead
 * `fu_udev_device_is_pci_base_cls`: Put logic in `FuPciDevice` if needed, but consider what you are doing
 * `fu_udev_device_get_cls`: Put logic in `FuPciDevice` if needed, or use a quirk instead
+* `fu_udev_device_get_vendor`: Use `fu_device_get_vid()` instead
+* `fu_udev_device_set_vendor`: Use `fu_device_set_vid()` instead
+* `fu_udev_device_get_model`: Use `fu_device_get_pid()` instead
+* `fu_udev_device_set_model`: Use `fu_device_set_pid()` instead
+* `fu_udev_device_get_subsystem_vendor`: Use `fu_pci_device_get_subsystem_vid()` instead
+* `fu_udev_device_get_subsystem_model`: Use `fu_pci_device_get_subsystem_pid()` instead
+* `fu_udev_device_get_revision`: Use `fu_pci_device_get_revision()` instead
+* `fu_udev_device_set_revision`: Use `fu_pci_device_set_revision()` instead

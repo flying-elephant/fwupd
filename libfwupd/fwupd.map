@@ -206,7 +206,6 @@ LIBFWUPD_1.0.4 {
 
 LIBFWUPD_1.0.7 {
   global:
-    fwupd_get_os_release;
     fwupd_remote_get_agreement;
     fwupd_remote_set_agreement;
   local: *;
@@ -264,8 +263,6 @@ LIBFWUPD_1.2.2 {
 LIBFWUPD_1.2.4 {
   global:
     fwupd_client_get_tainted;
-    fwupd_device_get_update_message;
-    fwupd_device_set_update_message;
     fwupd_release_get_details_url;
     fwupd_release_get_source_url;
     fwupd_release_get_update_message;
@@ -404,8 +401,6 @@ LIBFWUPD_1.4.5 {
     fwupd_client_set_user_agent_for_package;
     fwupd_client_update_metadata_bytes;
     fwupd_client_upload_bytes;
-    fwupd_device_get_update_image;
-    fwupd_device_set_update_image;
     fwupd_feature_flag_from_string;
     fwupd_feature_flag_to_string;
     fwupd_release_get_update_image;
@@ -782,7 +777,6 @@ LIBFWUPD_1.8.7 {
 
 LIBFWUPD_1.8.8 {
   global:
-    fwupd_get_os_release_full;
     fwupd_release_add_report;
     fwupd_release_get_reports;
     fwupd_report_add_metadata_item;
@@ -977,6 +971,7 @@ LIBFWUPD_2.0.0 {
     fwupd_codec_to_json_string;
     fwupd_codec_to_string;
     fwupd_codec_to_variant;
+    fwupd_device_remove_children;
     fwupd_error_convert;
     fwupd_install_flags_to_string;
     fwupd_remote_get_privacy_uri;

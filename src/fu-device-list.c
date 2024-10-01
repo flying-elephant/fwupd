@@ -300,11 +300,23 @@ fu_device_list_find_by_connection(FuDeviceList *self,
 	return NULL;
 }
 
+static gint
+fu_device_list_item_sort_by_priority_cb(gconstpointer a, gconstpointer b)
+{
+	const FuDeviceItem *item1 = *((FuDeviceItem **)a);
+	const FuDeviceItem *item2 = *((FuDeviceItem **)b);
+	if (fu_device_get_priority(item1->device) < fu_device_get_priority(item2->device))
+		return 1;
+	if (fu_device_get_priority(item1->device) > fu_device_get_priority(item2->device))
+		return -1;
+	return 0;
+}
+
 static FuDeviceItem *
 fu_device_list_find_by_id(FuDeviceList *self, const gchar *device_id, gboolean *multiple_matches)
 {
-	FuDeviceItem *item = NULL;
 	gsize device_id_len;
+	g_autoptr(GPtrArray) items = g_ptr_array_new();
 
 	/* sanity check */
 	if (device_id == NULL) {
@@ -322,15 +334,17 @@ fu_device_list_find_by_id(FuDeviceList *self, const gchar *device_id, gboolean *
 				      NULL};
 		for (guint j = 0; ids[j] != NULL; j++) {
 			if (strncmp(ids[j], device_id, device_id_len) == 0) {
-				if (item != NULL && multiple_matches != NULL)
+				if (j == 0 && items->len > 0 && multiple_matches != NULL)
 					*multiple_matches = TRUE;
-				item = item_tmp;
+				g_ptr_array_add(items, item_tmp);
 			}
 		}
 	}
 	g_rw_lock_reader_unlock(&self->devices_mutex);
-	if (item != NULL)
-		return item;
+	if (items->len > 0) {
+		g_ptr_array_sort(items, fu_device_list_item_sort_by_priority_cb);
+		return g_ptr_array_index(items, 0);
+	}
 
 	/* only search old devices if we didn't find the active device */
 	g_rw_lock_reader_lock(&self->devices_mutex);
@@ -343,14 +357,20 @@ fu_device_list_find_by_id(FuDeviceList *self, const gchar *device_id, gboolean *
 		ids[1] = fu_device_get_equivalent_id(item_tmp->device_old);
 		for (guint j = 0; ids[j] != NULL; j++) {
 			if (strncmp(ids[j], device_id, device_id_len) == 0) {
-				if (item != NULL && multiple_matches != NULL)
+				if (j == 0 && items->len > 0 && multiple_matches != NULL)
 					*multiple_matches = TRUE;
-				item = item_tmp;
+				g_ptr_array_add(items, item_tmp);
 			}
 		}
 	}
 	g_rw_lock_reader_unlock(&self->devices_mutex);
-	return item;
+	if (items->len > 0) {
+		g_ptr_array_sort(items, fu_device_list_item_sort_by_priority_cb);
+		return g_ptr_array_index(items, 0);
+	}
+
+	/* failed */
+	return NULL;
 }
 
 /**
@@ -594,6 +614,14 @@ fu_device_list_item_finalized_cb(gpointer data, GObject *where_the_object_was)
 	g_rw_lock_writer_unlock(&self->devices_mutex);
 }
 
+static void
+fu_device_list_item_set_device_old(FuDeviceItem *item, FuDevice *device)
+{
+	fu_device_set_parent(device, NULL);
+	fu_device_remove_children(device);
+	g_set_object(&item->device_old, device);
+}
+
 /* this should never be required, and yet here we are */
 static void
 fu_device_list_item_set_device(FuDeviceItem *item, FuDevice *device)
@@ -648,27 +676,9 @@ _fu_device_incorporate_problem_update_in_progress(FuDevice *self, FuDevice *dono
 }
 
 static void
-_fu_device_incorporate_update_state(FuDevice *self, FuDevice *donor)
-{
-	if (fu_device_get_update_error(donor) != NULL && fu_device_get_update_error(self) == NULL) {
-		const gchar *update_error = fu_device_get_update_error(donor);
-		g_info("copying update error %s to new device", update_error);
-		fu_device_set_update_error(self, update_error);
-	}
-	if (fu_device_get_update_state(donor) != FWUPD_UPDATE_STATE_UNKNOWN &&
-	    fu_device_get_update_state(self) == FWUPD_UPDATE_STATE_UNKNOWN) {
-		FwupdUpdateState update_state = fu_device_get_update_state(donor);
-		g_info("copying update state %s to new device",
-		       fwupd_update_state_to_string(update_state));
-		fu_device_set_update_state(self, update_state);
-	}
-}
-
-static void
 fu_device_list_replace(FuDeviceList *self, FuDeviceItem *item, FuDevice *device)
 {
 	GPtrArray *children = fu_device_get_children(item->device);
-	GPtrArray *vendor_ids;
 	g_autofree gchar *str = NULL;
 
 	/* run the optional device-specific subclass */
@@ -677,13 +687,12 @@ fu_device_list_replace(FuDeviceList *self, FuDeviceItem *item, FuDevice *device)
 	/* copy over any GUIDs that used to exist */
 	fu_device_list_add_missing_guids(device, item->device);
 
-	/* enforce the vendor ID if specified */
-	vendor_ids = fu_device_get_vendor_ids(item->device);
-	for (guint i = 0; i < vendor_ids->len; i++) {
-		const gchar *vendor_id = g_ptr_array_index(vendor_ids, i);
-		g_info("copying old vendor ID %s to new device", vendor_id);
-		fwupd_device_add_vendor_id(FWUPD_DEVICE(device), vendor_id);
-	}
+	/* incorporate properties from the old device */
+	fu_device_incorporate(device,
+			      item->device,
+			      FU_DEVICE_INCORPORATE_FLAG_VENDOR_IDS |
+				  FU_DEVICE_INCORPORATE_FLAG_UPDATE_ERROR |
+				  FU_DEVICE_INCORPORATE_FLAG_UPDATE_STATE);
 
 	/* copy inhibit */
 	_fu_device_incorporate_problem_update_in_progress(item->device, device);
@@ -691,39 +700,37 @@ fu_device_list_replace(FuDeviceList *self, FuDeviceItem *item, FuDevice *device)
 	/* copy over the version strings if not set */
 	if (fu_device_get_version(item->device) != NULL && fu_device_get_version(device) == NULL) {
 		const gchar *version = fu_device_get_version(item->device);
+		guint64 raw = fu_device_get_version_raw(item->device);
 		g_info("copying old version %s to new device", version);
 		fu_device_set_version_format(device, fu_device_get_version_format(item->device));
-		fu_device_set_version(device, version);
+		fu_device_set_version(device, version); /* nocheck:set-version */
+		fu_device_set_version_raw(device, raw);
 	}
 
 	/* always use the runtime version */
 	if (fu_device_has_private_flag(item->device, FU_DEVICE_PRIVATE_FLAG_USE_RUNTIME_VERSION) &&
 	    fu_device_has_flag(item->device, FWUPD_DEVICE_FLAG_NEEDS_BOOTLOADER)) {
 		const gchar *version = fu_device_get_version(item->device);
+		guint64 raw = fu_device_get_version_raw(item->device);
 		g_info("forcing runtime version %s to new device", version);
 		fu_device_set_version_format(device, fu_device_get_version_format(item->device));
-		fu_device_set_version(device, version);
+		fu_device_set_version(device, version); /* nocheck:set-version */
+		fu_device_set_version_raw(device, raw);
 	}
 
 	/* allow another plugin to handle the write too */
-	if (fu_device_has_flag(item->device, FWUPD_DEVICE_FLAG_ANOTHER_WRITE_REQUIRED)) {
-		g_debug("copying another-write-required to new device");
-		fu_device_add_flag(device, FWUPD_DEVICE_FLAG_ANOTHER_WRITE_REQUIRED);
-	}
+	fu_device_incorporate_flag(device, item->device, FWUPD_DEVICE_FLAG_ANOTHER_WRITE_REQUIRED);
 
 	/* seems like a sane assumption if we've tagged the runtime mode as signed */
-	if (fu_device_has_flag(item->device, FWUPD_DEVICE_FLAG_SIGNED_PAYLOAD))
-		fu_device_add_flag(device, FWUPD_DEVICE_FLAG_SIGNED_PAYLOAD);
-	if (fu_device_has_flag(item->device, FWUPD_DEVICE_FLAG_UNSIGNED_PAYLOAD))
-		fu_device_add_flag(device, FWUPD_DEVICE_FLAG_UNSIGNED_PAYLOAD);
+	fu_device_incorporate_flag(device, item->device, FWUPD_DEVICE_FLAG_SIGNED_PAYLOAD);
+	fu_device_incorporate_flag(device, item->device, FWUPD_DEVICE_FLAG_UNSIGNED_PAYLOAD);
+
+	/* never unset */
 	if (fu_device_has_flag(item->device, FWUPD_DEVICE_FLAG_EMULATION_TAG))
 		fu_device_add_flag(device, FWUPD_DEVICE_FLAG_EMULATION_TAG);
 
 	/* device won't come back in right mode */
-	if (fu_device_has_flag(item->device, FWUPD_DEVICE_FLAG_WILL_DISAPPEAR)) {
-		g_info("copying will-disappear to new device");
-		fu_device_add_flag(device, FWUPD_DEVICE_FLAG_WILL_DISAPPEAR);
-	}
+	fu_device_incorporate_flag(device, item->device, FWUPD_DEVICE_FLAG_WILL_DISAPPEAR);
 
 	/* copy the parent if not already set */
 	if (fu_device_get_parent(item->device) != NULL &&
@@ -741,11 +748,8 @@ fu_device_list_replace(FuDeviceList *self, FuDeviceItem *item, FuDevice *device)
 		fu_device_add_child(device, child);
 	}
 
-	/* copy the update state if known */
-	_fu_device_incorporate_update_state(item->device, device);
-
 	/* assign the new device */
-	g_set_object(&item->device_old, item->device);
+	fu_device_list_item_set_device_old(item, item->device);
 	fu_device_list_item_set_device(item, device);
 	fu_device_list_emit_device_changed(self, device);
 
@@ -804,7 +808,10 @@ fu_device_list_add(FuDeviceList *self, FuDevice *device)
 			fu_device_remove_private_flag(item->device,
 						      FU_DEVICE_PRIVATE_FLAG_UNCONNECTED);
 			_fu_device_incorporate_problem_update_in_progress(device, item->device);
-			_fu_device_incorporate_update_state(device, item->device);
+			fu_device_incorporate(item->device,
+					      device,
+					      FU_DEVICE_INCORPORATE_FLAG_UPDATE_ERROR |
+						  FU_DEVICE_INCORPORATE_FLAG_UPDATE_ERROR);
 			g_set_object(&item->device_old, item->device);
 			fu_device_list_item_set_device(item, device);
 			fu_device_list_clear_wait_for_replug(self, item);
@@ -855,6 +862,9 @@ fu_device_list_add(FuDeviceList *self, FuDevice *device)
 		       "FU_DEVICE_PRIVATE_FLAG_REPLUG_MATCH_GUID if required",
 		       fu_device_get_id(item->device));
 	}
+
+	/* this can never be true */
+	fu_device_remove_private_flag(device, FU_DEVICE_PRIVATE_FLAG_UNCONNECTED);
 
 	/* add helper */
 	item = g_new0(FuDeviceItem, 1);

@@ -13,6 +13,7 @@
 
 #include "fwupd-common.h"
 #include "fwupd-device-private.h"
+#include "fwupd-enums-private.h"
 
 #include "fu-bytes.h"
 #include "fu-common.h"
@@ -49,12 +50,17 @@ typedef struct {
 	gchar *logical_id;
 	gchar *backend_id;
 	gchar *update_request_id;
+	gchar *update_message;
+	gchar *update_image;
 	gchar *proxy_guid;
 	FuDevice *proxy;    /* noref */
+	FuDevice *target;   /* ref */
 	FuBackend *backend; /* noref */
 	FuContext *ctx;
 	gint64 created_usec;
 	gint64 modified_usec;
+	guint16 vid;
+	guint16 pid;
 	GHashTable *inhibits;		/* (nullable) */
 	GHashTable *metadata;		/* (nullable) */
 	GPtrArray *parent_guids;	/* (nullable) (element-type utf-8) */
@@ -110,6 +116,9 @@ enum {
 	PROP_PHYSICAL_ID,
 	PROP_LOGICAL_ID,
 	PROP_BACKEND_ID,
+	PROP_EQUIVALENT_ID,
+	PROP_UPDATE_MESSAGE,
+	PROP_UPDATE_IMAGE,
 	PROP_CONTEXT,
 	PROP_BACKEND,
 	PROP_PROXY,
@@ -139,6 +148,15 @@ fu_device_get_property(GObject *object, guint prop_id, GValue *value, GParamSpec
 		break;
 	case PROP_BACKEND_ID:
 		g_value_set_string(value, priv->backend_id);
+		break;
+	case PROP_EQUIVALENT_ID:
+		g_value_set_string(value, priv->equivalent_id);
+		break;
+	case PROP_UPDATE_MESSAGE:
+		g_value_set_string(value, priv->update_message);
+		break;
+	case PROP_UPDATE_IMAGE:
+		g_value_set_string(value, priv->update_image);
 		break;
 	case PROP_CONTEXT:
 		g_value_set_object(value, priv->ctx);
@@ -174,6 +192,15 @@ fu_device_set_property(GObject *object, guint prop_id, const GValue *value, GPar
 		break;
 	case PROP_BACKEND_ID:
 		fu_device_set_backend_id(self, g_value_get_string(value));
+		break;
+	case PROP_EQUIVALENT_ID:
+		fu_device_set_equivalent_id(self, g_value_get_string(value));
+		break;
+	case PROP_UPDATE_MESSAGE:
+		fu_device_set_update_message(self, g_value_get_string(value));
+		break;
+	case PROP_UPDATE_IMAGE:
+		fu_device_set_update_image(self, g_value_get_string(value));
 		break;
 	case PROP_CONTEXT:
 		fu_device_set_context(self, g_value_get_object(value));
@@ -938,8 +965,15 @@ fu_device_set_equivalent_id(FuDevice *self, const gchar *equivalent_id)
 	if (g_strcmp0(priv->equivalent_id, equivalent_id) == 0)
 		return;
 
+	/* sanity check */
+	if (!fwupd_device_id_is_valid(equivalent_id)) {
+		g_critical("%s is not a valid device ID", equivalent_id);
+		return;
+	}
+
 	g_free(priv->equivalent_id);
 	priv->equivalent_id = g_strdup(equivalent_id);
+	g_object_notify(G_OBJECT(self), "equivalent-id");
 }
 
 /**
@@ -1103,13 +1137,7 @@ fu_device_set_proxy(FuDevice *self, FuDevice *proxy)
 
 	/* copy from proxy */
 	if (proxy != NULL) {
-		if (fu_device_get_context(self) == NULL && fu_device_get_context(proxy) != NULL)
-			fu_device_set_context(self, fu_device_get_context(proxy));
-		if (fu_device_get_backend(self) == NULL && fu_device_get_backend(proxy) != NULL)
-			fu_device_set_backend(self, fu_device_get_backend(proxy));
-		if (fu_device_get_physical_id(self) == NULL &&
-		    fu_device_get_physical_id(proxy) != NULL)
-			fu_device_set_physical_id(self, fu_device_get_physical_id(proxy));
+		fu_device_incorporate(self, proxy, FU_DEVICE_INCORPORATE_FLAG_PHYSICAL_ID);
 		priv->notify_flags_proxy_id =
 		    g_signal_connect(FWUPD_DEVICE(proxy),
 				     "notify::flags",
@@ -1121,6 +1149,7 @@ fu_device_set_proxy(FuDevice *self, FuDevice *proxy)
 	/* sometimes strong, sometimes weak */
 	if (fu_device_has_private_flag(self, FU_DEVICE_PRIVATE_FLAG_REFCOUNTED_PROXY)) {
 		g_set_object(&priv->proxy, proxy);
+		fu_device_set_target(self, proxy);
 	} else {
 		if (priv->proxy != NULL)
 			g_object_remove_weak_pointer(G_OBJECT(priv->proxy),
@@ -1209,7 +1238,6 @@ void
 fu_device_add_child(FuDevice *self, FuDevice *child)
 {
 	FuDevicePrivate *priv = GET_PRIVATE(self);
-	FuDevicePrivate *priv_child = GET_PRIVATE(child);
 	GPtrArray *children;
 	g_autoptr(GError) error = NULL;
 
@@ -1265,32 +1293,13 @@ fu_device_add_child(FuDevice *self, FuDevice *child)
 	}
 
 	/* copy from main device if unset */
-	if (fu_device_get_physical_id(child) == NULL && fu_device_get_physical_id(self) != NULL)
-		fu_device_set_physical_id(child, fu_device_get_physical_id(self));
-	if (priv_child->backend_id == NULL && priv->backend_id != NULL)
-		fu_device_set_backend_id(child, priv->backend_id);
-	if (priv_child->ctx == NULL && priv->ctx != NULL)
-		fu_device_set_context(child, priv->ctx);
-	if (fu_device_get_vendor(child) == NULL)
-		fu_device_set_vendor(child, fu_device_get_vendor(self));
-	if (priv_child->remove_delay == 0 && priv->remove_delay != 0)
-		fu_device_set_remove_delay(child, priv->remove_delay);
-	if (priv_child->acquiesce_delay == 0 && priv->acquiesce_delay != 0)
-		fu_device_set_acquiesce_delay(child, priv->acquiesce_delay);
-	if (fu_device_get_vendor_ids(child)->len == 0) {
-		GPtrArray *vendor_ids = fu_device_get_vendor_ids(self);
-		for (guint i = 0; i < vendor_ids->len; i++) {
-			const gchar *vendor_id = g_ptr_array_index(vendor_ids, i);
-			fu_device_add_vendor_id(child, vendor_id);
-		}
-	}
-	if (fu_device_get_icons(child)->len == 0) {
-		GPtrArray *icons = fu_device_get_icons(self);
-		for (guint i = 0; i < icons->len; i++) {
-			const gchar *icon_name = g_ptr_array_index(icons, i);
-			fu_device_add_icon(child, icon_name);
-		}
-	}
+	fu_device_incorporate(
+	    child,
+	    self,
+	    FU_DEVICE_INCORPORATE_FLAG_PHYSICAL_ID | FU_DEVICE_INCORPORATE_FLAG_BACKEND_ID |
+		FU_DEVICE_INCORPORATE_FLAG_REMOVE_DELAY |
+		FU_DEVICE_INCORPORATE_FLAG_ACQUIESCE_DELAY | FU_DEVICE_INCORPORATE_FLAG_VENDOR_IDS |
+		FU_DEVICE_INCORPORATE_FLAG_ICONS | FU_DEVICE_INCORPORATE_FLAG_VENDOR);
 
 	/* ensure the ID is converted */
 	if (!fu_device_ensure_id(child, &error))
@@ -1323,6 +1332,32 @@ fu_device_remove_child(FuDevice *self, FuDevice *child)
 
 	/* signal to the plugin */
 	g_signal_emit(self, signals[SIGNAL_CHILD_REMOVED], 0, child);
+}
+
+/**
+ * fu_device_remove_children:
+ * @self: a #FuDevice
+ *
+ * Removes all child devices.
+ *
+ * Since: 2.0.0
+ **/
+void
+fu_device_remove_children(FuDevice *self)
+{
+	GPtrArray *children;
+
+	g_return_if_fail(FU_IS_DEVICE(self));
+
+	/* proxy */
+	fwupd_device_remove_children(FWUPD_DEVICE(self));
+
+	/* signal to the plugin */
+	children = fu_device_get_children(self);
+	for (guint i = 0; i < children->len; i++) {
+		FuDevice *child = g_ptr_array_index(children, i);
+		g_signal_emit(self, signals[SIGNAL_CHILD_REMOVED], 0, child);
+	}
 }
 
 static void
@@ -1593,8 +1628,7 @@ fu_device_add_child_by_type_guid(FuDevice *self, GType type, const gchar *guid, 
 	g_autoptr(FuDevice) child = NULL;
 	child = g_object_new(type, "context", priv->ctx, "logical-id", guid, NULL);
 	fu_device_add_guid(child, guid);
-	if (fu_device_get_physical_id(self) != NULL)
-		fu_device_set_physical_id(child, fu_device_get_physical_id(self));
+	fu_device_incorporate(child, self, FU_DEVICE_INCORPORATE_FLAG_PHYSICAL_ID);
 	if (!fu_device_ensure_id(self, error))
 		return FALSE;
 	if (!fu_device_probe(child, error))
@@ -2607,6 +2641,14 @@ fu_device_fixup_vendor_name(FuDevice *self)
 	if (name != NULL && vendor != NULL) {
 		g_autofree gchar *name_up = g_utf8_strup(name, -1);
 		g_autofree gchar *vendor_up = g_utf8_strup(vendor, -1);
+		if (g_strcmp0(name_up, vendor_up) == 0) {
+#ifndef SUPPORTED_BUILD
+			g_warning("name and vendor are the same for %s [%s]",
+				  fu_device_get_name(self),
+				  fu_device_get_id(self));
+#endif
+			return;
+		}
 		if (g_str_has_prefix(name_up, vendor_up)) {
 			gsize vendor_len = strlen(vendor);
 			g_autofree gchar *name1 = g_strdup(name + vendor_len);
@@ -3036,6 +3078,12 @@ fu_device_problem_to_inhibit_reason(FuDevice *self, guint64 device_problem)
 		return g_strdup("Device is in use");
 	if (device_problem == FWUPD_DEVICE_PROBLEM_DISPLAY_REQUIRED)
 		return g_strdup("Device requires a display to be plugged in");
+	if (device_problem == FWUPD_DEVICE_PROBLEM_LOWER_PRIORITY) {
+		if (fu_device_get_equivalent_id(self) == NULL)
+			return g_strdup("Device is lower priority than an equivalent device");
+		return g_strdup_printf("Device is lower priority than equivalent device %s",
+				       fu_device_get_equivalent_id(self));
+	}
 	if (device_problem == FWUPD_DEVICE_PROBLEM_MISSING_LICENSE)
 		return g_strdup("Device does not have the necessary license installed");
 	if (device_problem == FWUPD_DEVICE_PROBLEM_SYSTEM_POWER_TOO_LOW) {
@@ -3474,6 +3522,7 @@ FuDevice *
 fu_device_get_backend_parent_with_subsystem(FuDevice *self, const gchar *subsystem, GError **error)
 {
 	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_autoptr(FuDevice) parent = NULL;
 
 	g_return_val_if_fail(FU_IS_DEVICE(self), NULL);
 	g_return_val_if_fail(error == NULL || *error == NULL, NULL);
@@ -3485,7 +3534,12 @@ fu_device_get_backend_parent_with_subsystem(FuDevice *self, const gchar *subsyst
 				    "no backend set for device");
 		return NULL;
 	}
-	return fu_backend_get_device_parent(priv->backend, self, subsystem, error);
+	parent = fu_backend_get_device_parent(priv->backend, self, subsystem, error);
+	if (parent == NULL)
+		return NULL;
+	if (parent != self)
+		fu_device_set_target(parent, self);
+	return g_steal_pointer(&parent);
 }
 
 /**
@@ -3550,6 +3604,90 @@ fu_device_set_update_request_id(FuDevice *self, const gchar *update_request_id)
 
 	g_free(priv->update_request_id);
 	priv->update_request_id = g_strdup(update_request_id);
+}
+
+/**
+ * fu_device_get_update_message:
+ * @self: a #FuDevice
+ *
+ * Gets the update message string.
+ *
+ * Returns: the update message string, or %NULL if unset
+ *
+ * Since: 2.0.0
+ **/
+const gchar *
+fu_device_get_update_message(FuDevice *self)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_return_val_if_fail(FU_IS_DEVICE(self), NULL);
+	return priv->update_message;
+}
+
+/**
+ * fu_device_set_update_message:
+ * @self: a #FuDevice
+ * @update_message: (nullable): the update message string
+ *
+ * Sets the update message string.
+ *
+ * Since: 2.0.0
+ **/
+void
+fu_device_set_update_message(FuDevice *self, const gchar *update_message)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_return_if_fail(FU_IS_DEVICE(self));
+
+	/* not changed */
+	if (g_strcmp0(priv->update_message, update_message) == 0)
+		return;
+
+	g_free(priv->update_message);
+	priv->update_message = g_strdup(update_message);
+	g_object_notify(G_OBJECT(self), "update-message");
+}
+
+/**
+ * fu_device_get_update_image:
+ * @self: a #FuDevice
+ *
+ * Gets the update image URL.
+ *
+ * Returns: the update image URL, or %NULL if unset
+ *
+ * Since: 2.0.0
+ **/
+const gchar *
+fu_device_get_update_image(FuDevice *self)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_return_val_if_fail(FU_IS_DEVICE(self), NULL);
+	return priv->update_image;
+}
+
+/**
+ * fu_device_set_update_image:
+ * @self: a #FuDevice
+ * @update_image: (nullable): the update image URL
+ *
+ * Sets the update image URL.
+ *
+ * Since: 2.0.0
+ **/
+void
+fu_device_set_update_image(FuDevice *self, const gchar *update_image)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_return_if_fail(FU_IS_DEVICE(self));
+
+	/* not changed */
+	if (g_strcmp0(priv->update_image, update_image) == 0)
+		return;
+
+	g_free(priv->update_image);
+	priv->update_image = g_strdup(update_image);
+	g_object_notify(G_OBJECT(self), "update-image");
 }
 
 /**
@@ -4133,6 +4271,76 @@ fu_device_get_modified_usec(FuDevice *self)
 }
 
 /**
+ * fu_device_get_vid:
+ * @self: a #FuUdevDevice
+ *
+ * Gets the device vendor code.
+ *
+ * Returns: a vendor code, or 0 if unset or invalid
+ *
+ * Since: 2.0.0
+ **/
+guint16
+fu_device_get_vid(FuDevice *self)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_return_val_if_fail(FU_IS_DEVICE(self), 0x0000);
+	return priv->vid;
+}
+
+/**
+ * fu_device_set_vid:
+ * @self: a #FuUdevDevice
+ * @vid: an integer ID
+ *
+ * Sets the vendor ID.
+ *
+ * Since: 2.0.0
+ **/
+void
+fu_device_set_vid(FuDevice *self, guint16 vid)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_return_if_fail(FU_IS_DEVICE(self));
+	priv->vid = vid;
+}
+
+/**
+ * fu_device_get_pid:
+ * @self: a #FuUdevDevice
+ *
+ * Gets the device product code.
+ *
+ * Returns: a product code, or 0 if unset or invalid
+ *
+ * Since: 2.0.0
+ **/
+guint16
+fu_device_get_pid(FuDevice *self)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_return_val_if_fail(FU_IS_DEVICE(self), 0x0000);
+	return priv->pid;
+}
+
+/**
+ * fu_device_set_pid:
+ * @self: a #FuUdevDevice
+ * @pid: an integer ID
+ *
+ * Sets the product ID.
+ *
+ * Since: 2.0.0
+ **/
+void
+fu_device_set_pid(FuDevice *self, guint16 pid)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+	g_return_if_fail(FU_IS_DEVICE(self));
+	priv->pid = pid;
+}
+
+/**
  * fu_device_set_modified_usec:
  * @self: a #FuDevice
  * @modified_usec: value in microseconds
@@ -4177,7 +4385,11 @@ fu_device_to_string_impl(FuDevice *self, guint idt, GString *str)
 	fwupd_codec_string_append(str, idt, "PhysicalId", priv->physical_id);
 	fwupd_codec_string_append(str, idt, "LogicalId", priv->logical_id);
 	fwupd_codec_string_append(str, idt, "BackendId", priv->backend_id);
+	fwupd_codec_string_append_hex(str, idt, "Vid", priv->vid);
+	fwupd_codec_string_append_hex(str, idt, "Pid", priv->pid);
 	fwupd_codec_string_append(str, idt, "UpdateRequestId", priv->update_request_id);
+	fwupd_codec_string_append(str, idt, FWUPD_RESULT_KEY_UPDATE_MESSAGE, priv->update_message);
+	fwupd_codec_string_append(str, idt, FWUPD_RESULT_KEY_UPDATE_IMAGE, priv->update_image);
 	fwupd_codec_string_append(str, idt, "ProxyGuid", priv->proxy_guid);
 	fwupd_codec_string_append_int(str, idt, "RemoveDelay", priv->remove_delay);
 	fwupd_codec_string_append_int(str, idt, "AcquiesceDelay", priv->acquiesce_delay);
@@ -5581,198 +5793,243 @@ fu_device_build_vendor_id_u16(FuDevice *self, const gchar *prefix, guint16 value
 	fwupd_device_add_vendor_id(FWUPD_DEVICE(self), vendor_id);
 }
 
-static void
-fu_device_incorporate_subclasses(FuDevice *self, FuDevice *donor)
-{
-	gpointer device_class_incorporate_last = NULL;
-	g_autoptr(GList) device_class_list = NULL;
-
-	/* run every unique ->incorporate() in each subclass */
-	for (GType gtype = G_OBJECT_TYPE(self); gtype != FWUPD_TYPE_DEVICE;
-	     gtype = g_type_parent(gtype)) {
-		FuDeviceClass *device_class = g_type_class_peek(gtype);
-		for (GType gtype_donor = G_OBJECT_TYPE(donor); gtype_donor != FWUPD_TYPE_DEVICE;
-		     gtype_donor = g_type_parent(gtype_donor)) {
-			if (gtype == gtype_donor)
-				device_class_list = g_list_prepend(device_class_list, device_class);
-		}
-	}
-	for (GList *l = device_class_list; l != NULL; l = l->next) {
-		FuDeviceClass *device_class = FU_DEVICE_CLASS(l->data);
-		if (device_class->incorporate != NULL &&
-		    device_class->incorporate != device_class_incorporate_last) {
-			device_class->incorporate(self, donor);
-			device_class_incorporate_last = device_class->incorporate;
-		}
-	}
-}
-
-/**
- * fu_device_incorporate_vendor_ids:
- * @self: a #FuDevice
- * @donor: Another #FuDevice
- *
- * Copy all vendor IDs from the donor object.
- *
- * Since: 2.0.0
- **/
-void
-fu_device_incorporate_vendor_ids(FuDevice *self, FuDevice *donor)
-{
-	GPtrArray *vendor_ids;
-
-	g_return_if_fail(FU_IS_DEVICE(self));
-	g_return_if_fail(FU_IS_DEVICE(donor));
-
-	vendor_ids = fu_device_get_vendor_ids(donor);
-	for (guint i = 0; i < vendor_ids->len; i++) {
-		const gchar *vendor_id = g_ptr_array_index(vendor_ids, i);
-		fu_device_add_vendor_id(self, vendor_id);
-	}
-}
-
 /**
  * fu_device_incorporate:
  * @self: a #FuDevice
  * @donor: Another #FuDevice
+ * @flag: Some #FuDeviceIncorporateFlags, e.g. %FU_DEVICE_INCORPORATE_FLAG_PHYSICAL_ID
  *
- * Copy all properties from the donor object if they have not already been set.
+ * Copy some properties from the donor object if they have not already been set.
  *
- * Since: 1.1.0
+ * Since: 2.0.0
  **/
 void
-fu_device_incorporate(FuDevice *self, FuDevice *donor)
+fu_device_incorporate(FuDevice *self, FuDevice *donor, FuDeviceIncorporateFlags flag)
 {
 	FuDevicePrivate *priv = GET_PRIVATE(self);
 	FuDevicePrivate *priv_donor = GET_PRIVATE(donor);
-	GPtrArray *instance_ids = fu_device_get_instance_ids(donor);
-	GPtrArray *parent_physical_ids = fu_device_get_parent_physical_ids(donor);
-	GPtrArray *parent_backend_ids = fu_device_get_parent_backend_ids(donor);
-	GHashTableIter iter;
-	gpointer key, value;
 
 	g_return_if_fail(FU_IS_DEVICE(self));
 	g_return_if_fail(FU_IS_DEVICE(donor));
 
-	/* copy from donor FuDevice if has not already been set */
-	if (priv_donor->private_flags != NULL) {
-		for (guint i = 0; i < priv_donor->private_flags->len; i++) {
-			const gchar *item_donor = g_ptr_array_index(priv_donor->private_flags, i);
-			fu_device_add_private_flag(self, item_donor);
-		}
-	}
-	if (priv->created_usec == 0 && priv_donor->created_usec != 0)
-		fu_device_set_created_usec(self, priv_donor->created_usec);
-	if (priv->modified_usec == 0 && priv_donor->modified_usec != 0)
-		fu_device_set_modified_usec(self, priv_donor->modified_usec);
-	if (priv->equivalent_id == NULL && fu_device_get_equivalent_id(donor) != NULL)
-		fu_device_set_equivalent_id(self, fu_device_get_equivalent_id(donor));
-	if (priv->physical_id == NULL && priv_donor->physical_id != NULL)
-		fu_device_set_physical_id(self, priv_donor->physical_id);
-	if (priv->logical_id == NULL && priv_donor->logical_id != NULL)
-		fu_device_set_logical_id(self, priv_donor->logical_id);
-	if (priv->backend_id == NULL && priv_donor->backend_id != NULL)
-		fu_device_set_backend_id(self, priv_donor->backend_id);
-	if (priv->update_request_id == NULL && priv_donor->update_request_id != NULL)
-		fu_device_set_update_request_id(self, priv_donor->update_request_id);
-	if (fu_device_has_private_flag(self, FU_DEVICE_PRIVATE_FLAG_REFCOUNTED_PROXY) &&
-	    fu_device_has_private_flag(donor, FU_DEVICE_PRIVATE_FLAG_REFCOUNTED_PROXY)) {
-		if (priv->proxy == NULL && priv_donor->proxy != NULL)
-			fu_device_set_proxy(self, priv_donor->proxy);
-	}
-	if (priv->proxy_guid == NULL && priv_donor->proxy_guid != NULL)
-		fu_device_set_proxy_guid(self, priv_donor->proxy_guid);
-	if (priv->custom_flags == NULL && priv_donor->custom_flags != NULL)
-		fu_device_set_custom_flags(self, priv_donor->custom_flags);
+	/* do these unconditionally */
+	if (priv->ctx == NULL && priv_donor->ctx != NULL)
+		fu_device_set_context(self, priv_donor->ctx);
 	if (priv->backend == NULL && priv_donor->backend != NULL)
 		fu_device_set_backend(self, priv_donor->backend);
-	if (priv->ctx == NULL)
-		fu_device_set_context(self, fu_device_get_context(donor));
-	if (priv_donor->parent_guids != NULL) {
-		for (guint i = 0; i < priv_donor->parent_guids->len; i++) {
-			const gchar *guid = g_ptr_array_index(priv_donor->parent_guids, i);
-			fu_device_add_parent_guid(self, guid);
+
+	/* bitflags */
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_BASECLASS) {
+		fwupd_device_incorporate(FWUPD_DEVICE(self), FWUPD_DEVICE(donor));
+		if (fu_device_get_id(self) != NULL)
+			priv->device_id_valid = TRUE;
+		/* remove the baseclass-added serial number and GUIDs if set */
+		if (fu_device_has_private_flag(self, FU_DEVICE_PRIVATE_FLAG_NO_SERIAL_NUMBER))
+			fwupd_device_set_serial(FWUPD_DEVICE(self), NULL);
+		if (fu_device_has_private_flag(self, FU_DEVICE_PRIVATE_FLAG_NO_GENERIC_GUIDS))
+			g_ptr_array_set_size(fwupd_device_get_instance_ids(FWUPD_DEVICE(self)), 0);
+	}
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_VENDOR) {
+		if (fu_device_get_vendor(self) == NULL && fu_device_get_vendor(donor) != NULL)
+			fu_device_set_vendor(self, fu_device_get_vendor(donor));
+	}
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_PHYSICAL_ID) {
+		if (priv->physical_id == NULL && priv_donor->physical_id != NULL)
+			fu_device_set_physical_id(self, priv_donor->physical_id);
+	}
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_LOGICAL_ID) {
+		if (priv->logical_id == NULL && priv_donor->logical_id != NULL)
+			fu_device_set_logical_id(self, priv_donor->logical_id);
+	}
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_BACKEND_ID) {
+		if (priv->backend_id == NULL && priv_donor->backend_id != NULL)
+			fu_device_set_backend_id(self, priv_donor->backend_id);
+	}
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_VID) {
+		if (priv->vid == 0x0 && priv_donor->vid != 0x0)
+			fu_device_set_vid(self, priv_donor->vid);
+	}
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_PID) {
+		if (priv->pid == 0x0 && priv_donor->pid != 0x0)
+			fu_device_set_pid(self, priv_donor->pid);
+	}
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_VENDOR_IDS) {
+		GPtrArray *vendor_ids = fu_device_get_vendor_ids(donor);
+		for (guint i = 0; i < vendor_ids->len; i++) {
+			const gchar *vendor_id = g_ptr_array_index(vendor_ids, i);
+			fu_device_add_vendor_id(self, vendor_id);
 		}
 	}
-	if (parent_physical_ids != NULL) {
-		for (guint i = 0; i < parent_physical_ids->len; i++) {
-			const gchar *tmp = g_ptr_array_index(parent_physical_ids, i);
-			fu_device_add_parent_physical_id(self, tmp);
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_REMOVE_DELAY) {
+		if (priv->remove_delay == 0 && priv_donor->remove_delay != 0)
+			fu_device_set_remove_delay(self, priv_donor->remove_delay);
+	}
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_ACQUIESCE_DELAY) {
+		if (priv->acquiesce_delay == 0 && priv_donor->acquiesce_delay != 0)
+			fu_device_set_acquiesce_delay(self, priv_donor->acquiesce_delay);
+	}
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_ICONS) {
+		if (fu_device_get_icons(self)->len == 0) {
+			GPtrArray *icons = fu_device_get_icons(donor);
+			for (guint i = 0; i < icons->len; i++) {
+				const gchar *icon_name = g_ptr_array_index(icons, i);
+				fu_device_add_icon(self, icon_name);
+			}
 		}
 	}
-	if (parent_backend_ids != NULL) {
-		for (guint i = 0; i < parent_backend_ids->len; i++) {
-			const gchar *tmp = g_ptr_array_index(parent_backend_ids, i);
-			fu_device_add_parent_backend_id(self, tmp);
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_EVENTS) {
+		if (priv_donor->events != NULL && donor != priv->proxy) {
+			for (guint i = 0; i < priv_donor->events->len; i++) {
+				FuDeviceEvent *event = g_ptr_array_index(priv_donor->events, i);
+				fu_device_add_event(self, event);
+			}
 		}
 	}
-	if (priv_donor->counterpart_guids != NULL) {
-		for (guint i = 0; i < priv_donor->counterpart_guids->len; i++) {
-			const gchar *tmp = g_ptr_array_index(priv_donor->counterpart_guids, i);
-			fu_device_add_counterpart_guid(self, tmp);
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_UPDATE_ERROR) {
+		if (fu_device_get_update_error(self) == NULL &&
+		    fu_device_get_update_error(donor) != NULL) {
+			fu_device_set_update_error(self, fu_device_get_update_error(donor));
 		}
 	}
-	if (priv_donor->metadata != NULL) {
-		g_hash_table_iter_init(&iter, priv_donor->metadata);
-		while (g_hash_table_iter_next(&iter, &key, &value)) {
-			if (fu_device_get_metadata(self, key) == NULL)
-				fu_device_set_metadata(self, key, value);
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_UPDATE_STATE) {
+		if (fu_device_get_update_state(self) == FWUPD_UPDATE_STATE_UNKNOWN &&
+		    fu_device_get_update_state(donor) != FWUPD_UPDATE_STATE_UNKNOWN) {
+			fu_device_set_update_state(self, fu_device_get_update_state(donor));
 		}
 	}
-	if (priv_donor->events != NULL && donor != priv->proxy) {
-		for (guint i = 0; i < priv_donor->events->len; i++) {
-			FuDeviceEvent *event = g_ptr_array_index(priv_donor->events, i);
-			fu_device_add_event(self, event);
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_SUPERCLASS) {
+		gpointer device_class_incorporate_last = NULL;
+		g_autoptr(GList) device_class_list = NULL;
+
+		/* run every unique ->incorporate() in each subclass */
+		for (GType gtype = G_OBJECT_TYPE(self); gtype != FWUPD_TYPE_DEVICE;
+		     gtype = g_type_parent(gtype)) {
+			FuDeviceClass *device_class = g_type_class_peek(gtype);
+			for (GType gtype_donor = G_OBJECT_TYPE(donor);
+			     gtype_donor != FWUPD_TYPE_DEVICE;
+			     gtype_donor = g_type_parent(gtype_donor)) {
+				if (gtype == gtype_donor)
+					device_class_list =
+					    g_list_prepend(device_class_list, device_class);
+			}
+		}
+		for (GList *l = device_class_list; l != NULL; l = l->next) {
+			FuDeviceClass *device_class = FU_DEVICE_CLASS(l->data);
+			if (device_class->incorporate != NULL &&
+			    device_class->incorporate != device_class_incorporate_last) {
+				device_class->incorporate(self, donor);
+				device_class_incorporate_last = device_class->incorporate;
+			}
 		}
 	}
-
-	/* probably not required, but seems safer */
-	for (guint i = 0; i < priv_donor->possible_plugins->len; i++) {
-		const gchar *possible_plugin = g_ptr_array_index(priv_donor->possible_plugins, i);
-		fu_device_add_possible_plugin(self, possible_plugin);
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_UPDATE_MESSAGE) {
+		if (priv->update_message == NULL && priv_donor->update_message != NULL)
+			fu_device_set_update_message(self, priv_donor->update_message);
 	}
-	if (priv_donor->instance_id_quirks != NULL) {
-		for (guint i = 0; i < priv_donor->instance_id_quirks->len; i++) {
-			const gchar *instance_id =
-			    g_ptr_array_index(priv_donor->instance_id_quirks, i);
-			fu_device_add_instance_id_full(self,
-						       instance_id,
-						       FU_DEVICE_INSTANCE_FLAG_QUIRKS);
+	if (flag & FU_DEVICE_INCORPORATE_FLAG_UPDATE_IMAGE) {
+		if (priv->update_image == NULL && priv_donor->update_image != NULL)
+			fu_device_set_update_image(self, priv_donor->update_image);
+	}
+
+	/* everything else */
+	if (flag == FU_DEVICE_INCORPORATE_FLAG_ALL) {
+		GPtrArray *instance_ids = fu_device_get_instance_ids(donor);
+		GPtrArray *parent_physical_ids = fu_device_get_parent_physical_ids(donor);
+		GPtrArray *parent_backend_ids = fu_device_get_parent_backend_ids(donor);
+
+		/* copy from donor FuDevice if has not already been set */
+		if (priv_donor->private_flags != NULL) {
+			for (guint i = 0; i < priv_donor->private_flags->len; i++) {
+				const gchar *item_donor =
+				    g_ptr_array_index(priv_donor->private_flags, i);
+				fu_device_add_private_flag(self, item_donor);
+			}
 		}
-	}
-
-	/* copy all instance ID keys if not already set */
-	if (priv_donor->instance_hash != NULL) {
-		g_hash_table_iter_init(&iter, priv_donor->instance_hash);
-		while (g_hash_table_iter_next(&iter, &key, &value)) {
-			if (fu_device_get_instance_str(self, key) == NULL)
-				fu_device_add_instance_str(self, key, value);
+		if (priv->created_usec == 0 && priv_donor->created_usec != 0)
+			fu_device_set_created_usec(self, priv_donor->created_usec);
+		if (priv->modified_usec == 0 && priv_donor->modified_usec != 0)
+			fu_device_set_modified_usec(self, priv_donor->modified_usec);
+		if (priv->equivalent_id == NULL && fu_device_get_equivalent_id(donor) != NULL)
+			fu_device_set_equivalent_id(self, fu_device_get_equivalent_id(donor));
+		if (priv->update_request_id == NULL && priv_donor->update_request_id != NULL)
+			fu_device_set_update_request_id(self, priv_donor->update_request_id);
+		if (fu_device_has_private_flag(self, FU_DEVICE_PRIVATE_FLAG_REFCOUNTED_PROXY) &&
+		    fu_device_has_private_flag(donor, FU_DEVICE_PRIVATE_FLAG_REFCOUNTED_PROXY)) {
+			if (priv->proxy == NULL && priv_donor->proxy != NULL)
+				fu_device_set_proxy(self, priv_donor->proxy);
 		}
-	}
+		if (priv->proxy_guid == NULL && priv_donor->proxy_guid != NULL)
+			fu_device_set_proxy_guid(self, priv_donor->proxy_guid);
+		if (priv->custom_flags == NULL && priv_donor->custom_flags != NULL)
+			fu_device_set_custom_flags(self, priv_donor->custom_flags);
+		if (priv_donor->parent_guids != NULL) {
+			for (guint i = 0; i < priv_donor->parent_guids->len; i++) {
+				const gchar *guid = g_ptr_array_index(priv_donor->parent_guids, i);
+				fu_device_add_parent_guid(self, guid);
+			}
+		}
+		if (parent_physical_ids != NULL) {
+			for (guint i = 0; i < parent_physical_ids->len; i++) {
+				const gchar *tmp = g_ptr_array_index(parent_physical_ids, i);
+				fu_device_add_parent_physical_id(self, tmp);
+			}
+		}
+		if (parent_backend_ids != NULL) {
+			for (guint i = 0; i < parent_backend_ids->len; i++) {
+				const gchar *tmp = g_ptr_array_index(parent_backend_ids, i);
+				fu_device_add_parent_backend_id(self, tmp);
+			}
+		}
+		if (priv_donor->counterpart_guids != NULL) {
+			for (guint i = 0; i < priv_donor->counterpart_guids->len; i++) {
+				const gchar *tmp =
+				    g_ptr_array_index(priv_donor->counterpart_guids, i);
+				fu_device_add_counterpart_guid(self, tmp);
+			}
+		}
+		if (priv_donor->metadata != NULL) {
+			GHashTableIter iter;
+			gpointer key, value;
+			g_hash_table_iter_init(&iter, priv_donor->metadata);
+			while (g_hash_table_iter_next(&iter, &key, &value)) {
+				if (fu_device_get_metadata(self, key) == NULL)
+					fu_device_set_metadata(self, key, value);
+			}
+		}
 
-	/* now the base class, where all the interesting bits are */
-	fwupd_device_incorporate(FWUPD_DEVICE(self), FWUPD_DEVICE(donor));
+		/* probably not required, but seems safer */
+		for (guint i = 0; i < priv_donor->possible_plugins->len; i++) {
+			const gchar *possible_plugin =
+			    g_ptr_array_index(priv_donor->possible_plugins, i);
+			fu_device_add_possible_plugin(self, possible_plugin);
+		}
+		if (priv_donor->instance_id_quirks != NULL) {
+			for (guint i = 0; i < priv_donor->instance_id_quirks->len; i++) {
+				const gchar *instance_id =
+				    g_ptr_array_index(priv_donor->instance_id_quirks, i);
+				fu_device_add_instance_id_full(self,
+							       instance_id,
+							       FU_DEVICE_INSTANCE_FLAG_QUIRKS);
+			}
+		}
 
-	/* remove the baseclass-added serial number if set */
-	if (fu_device_has_private_flag(self, FU_DEVICE_PRIVATE_FLAG_NO_SERIAL_NUMBER))
-		fwupd_device_set_serial(FWUPD_DEVICE(self), NULL);
+		/* copy all instance ID keys if not already set */
+		if (priv_donor->instance_hash != NULL) {
+			GHashTableIter iter;
+			gpointer key, value;
+			g_hash_table_iter_init(&iter, priv_donor->instance_hash);
+			while (g_hash_table_iter_next(&iter, &key, &value)) {
+				if (fu_device_get_instance_str(self, key) == NULL)
+					fu_device_add_instance_str(self, key, value);
+			}
+		}
 
-	/* remove the baseclass-added GUIDs */
-	if (fu_device_has_private_flag(self, FU_DEVICE_PRIVATE_FLAG_NO_GENERIC_GUIDS))
-		g_ptr_array_set_size(fwupd_device_get_instance_ids(FWUPD_DEVICE(self)), 0);
-
-	/* set by the superclass */
-	if (fu_device_get_id(self) != NULL)
-		priv->device_id_valid = TRUE;
-
-	/* optional subclass */
-	fu_device_incorporate_subclasses(self, donor);
-
-	/* call the set_quirk_kv() vfunc for the superclassed object */
-	for (guint i = 0; i < instance_ids->len; i++) {
-		const gchar *instance_id = g_ptr_array_index(instance_ids, i);
-		g_autofree gchar *guid = fwupd_guid_hash_string(instance_id);
-		fu_device_add_guid_quirks(self, guid);
+		/* call the set_quirk_kv() vfunc for the superclassed object */
+		for (guint i = 0; i < instance_ids->len; i++) {
+			const gchar *instance_id = g_ptr_array_index(instance_ids, i);
+			g_autofree gchar *guid = fwupd_guid_hash_string(instance_id);
+			fu_device_add_guid_quirks(self, guid);
+		}
 	}
 }
 
@@ -5839,10 +6096,10 @@ fu_device_incorporate_from_component(FuDevice *self, XbNode *component)
 	g_return_if_fail(XB_IS_NODE(component));
 	tmp = xb_node_query_text(component, "custom/value[@key='LVFS::UpdateMessage']", NULL);
 	if (tmp != NULL)
-		fwupd_device_set_update_message(FWUPD_DEVICE(self), tmp);
+		fu_device_set_update_message(self, tmp);
 	tmp = xb_node_query_text(component, "custom/value[@key='LVFS::UpdateImage']", NULL);
 	if (tmp != NULL)
-		fwupd_device_set_update_image(FWUPD_DEVICE(self), tmp);
+		fu_device_set_update_image(self, tmp);
 }
 
 static void
@@ -6632,8 +6889,8 @@ fu_device_add_event(FuDevice *self, FuDeviceEvent *event)
 	g_return_if_fail(FU_IS_DEVICE_EVENT(event));
 
 	/* redirect */
-	if (priv->proxy != NULL) {
-		fu_device_add_event(priv->proxy, event);
+	if (priv->target != NULL) {
+		fu_device_add_event(priv->target, event);
 		return;
 	}
 
@@ -6662,8 +6919,8 @@ fu_device_save_event(FuDevice *self, const gchar *id)
 	g_return_val_if_fail(id != NULL, NULL);
 
 	/* redirect */
-	if (priv->proxy != NULL)
-		return fu_device_save_event(priv->proxy, id);
+	if (priv->target != NULL)
+		return fu_device_save_event(priv->target, id);
 
 	/* success */
 	event = fu_device_event_new(id);
@@ -6694,8 +6951,8 @@ fu_device_load_event(FuDevice *self, const gchar *id, GError **error)
 	g_return_val_if_fail(error == NULL || *error == NULL, NULL);
 
 	/* redirect */
-	if (priv->proxy != NULL)
-		return fu_device_load_event(priv->proxy, id, error);
+	if (priv->target != NULL)
+		return fu_device_load_event(priv->target, id, error);
 
 	/* sanity check */
 	if (priv->events == NULL) {
@@ -6755,8 +7012,8 @@ fu_device_get_events(FuDevice *self)
 	g_return_val_if_fail(FU_IS_DEVICE(self), NULL);
 
 	/* redirect */
-	if (priv->proxy != NULL)
-		return fu_device_get_events(priv->proxy);
+	if (priv->target != NULL)
+		return fu_device_get_events(priv->target);
 
 	fu_device_ensure_events(self);
 	return priv->events;
@@ -6779,8 +7036,8 @@ fu_device_clear_events(FuDevice *self)
 	g_return_if_fail(FU_IS_DEVICE(self));
 
 	/* redirect */
-	if (priv->proxy != NULL) {
-		fu_device_clear_events(priv->proxy);
+	if (priv->target != NULL) {
+		fu_device_clear_events(priv->target);
 		return;
 	}
 
@@ -6790,12 +7047,36 @@ fu_device_clear_events(FuDevice *self)
 	priv->event_idx = 0;
 }
 
+/**
+ * fu_device_set_target:
+ * @self: a #FuDevice
+ * @target: a #FuDevice
+ *
+ * Sets the target device where #FuDeviceEvent objects added to @self should actually be added.
+ *
+ * Any existing events added to @self are added immediately to @target.
+ *
+ * Since: 2.0.0
+ **/
+void
+fu_device_set_target(FuDevice *self, FuDevice *target)
+{
+	FuDevicePrivate *priv = GET_PRIVATE(self);
+
+	g_return_if_fail(FU_IS_DEVICE(self));
+	g_return_if_fail(FU_IS_DEVICE(target));
+
+	fu_device_incorporate(target, self, FU_DEVICE_INCORPORATE_FLAG_EVENTS);
+	g_set_object(&priv->target, target);
+}
+
 static void
 fu_device_dispose(GObject *object)
 {
 	FuDevice *self = FU_DEVICE(object);
 	FuDevicePrivate *priv = GET_PRIVATE(self);
 	g_clear_object(&priv->ctx);
+	g_clear_object(&priv->target);
 	G_OBJECT_CLASS(fu_device_parent_class)->dispose(object);
 }
 
@@ -6913,6 +7194,47 @@ fu_device_class_init(FuDeviceClass *klass)
 				    NULL,
 				    G_PARAM_READWRITE | G_PARAM_STATIC_NAME);
 	g_object_class_install_property(object_class, PROP_BACKEND_ID, pspec);
+
+	/**
+	 * FuDevice:equivalent-id:
+	 *
+	 * The device equivalent ID.
+	 *
+	 * Since: 2.0.0
+	 */
+	pspec = g_param_spec_string("equivalent-id",
+				    NULL,
+				    NULL,
+				    NULL,
+				    G_PARAM_READWRITE | G_PARAM_STATIC_NAME);
+	g_object_class_install_property(object_class, PROP_EQUIVALENT_ID, pspec);
+	/**
+	 * FuDevice:update-message:
+	 *
+	 * The device update message.
+	 *
+	 * Since: 2.0.0
+	 */
+	pspec = g_param_spec_string("update-message",
+				    NULL,
+				    NULL,
+				    NULL,
+				    G_PARAM_READWRITE | G_PARAM_STATIC_NAME);
+	g_object_class_install_property(object_class, PROP_UPDATE_MESSAGE, pspec);
+
+	/**
+	 * FuDevice:update-image:
+	 *
+	 * The update image for the device.
+	 *
+	 * Since: 2.0.0
+	 */
+	pspec = g_param_spec_string("update-image",
+				    NULL,
+				    NULL,
+				    NULL,
+				    G_PARAM_READWRITE | G_PARAM_STATIC_NAME);
+	g_object_class_install_property(object_class, PROP_UPDATE_IMAGE, pspec);
 
 	/**
 	 * FuDevice:context:
@@ -7054,6 +7376,8 @@ fu_device_finalize(GObject *object)
 	g_free(priv->logical_id);
 	g_free(priv->backend_id);
 	g_free(priv->update_request_id);
+	g_free(priv->update_message);
+	g_free(priv->update_image);
 	g_free(priv->proxy_guid);
 	g_free(priv->custom_flags);
 

@@ -1734,6 +1734,8 @@ fu_engine_device_unlock_func(gconstpointer user_data)
 	fu_device_add_protocol(device, "com.acme");
 	fu_device_add_guid(device, "2d47f29b-83a2-4f31-a2e8-63474f4d4c2e");
 	fu_device_add_flag(device, FWUPD_DEVICE_FLAG_LOCKED);
+	fu_device_add_flag(device, FWUPD_DEVICE_FLAG_UPDATABLE);
+	fu_device_add_flag(device, FWUPD_DEVICE_FLAG_UNSIGNED_PAYLOAD);
 	fu_device_set_version_format(device, FWUPD_VERSION_FORMAT_PLAIN);
 	fu_engine_add_device(engine, device);
 
@@ -1741,6 +1743,74 @@ fu_engine_device_unlock_func(gconstpointer user_data)
 	rel = fwupd_device_get_release_default(FWUPD_DEVICE(device));
 	g_assert_nonnull(rel);
 	g_assert_false(fwupd_release_has_flag(rel, FWUPD_RELEASE_FLAG_TRUSTED_REPORT));
+}
+
+static void
+fu_engine_device_equivalent_func(gconstpointer user_data)
+{
+	FuTest *self = (FuTest *)user_data;
+	gboolean ret;
+	g_autoptr(FuDevice) device1 = fu_device_new(self->ctx);
+	g_autoptr(FuDevice) device2 = fu_device_new(self->ctx);
+	g_autoptr(FuDevice) device_best = NULL;
+	g_autoptr(FuDevice) device_worst = NULL;
+	g_autoptr(FuEngine) engine = fu_engine_new(self->ctx);
+	g_autoptr(FuProgress) progress = fu_progress_new(G_STRLOC);
+	g_autoptr(GPtrArray) devices = NULL;
+	g_autoptr(GError) error = NULL;
+
+	/* load engine to get FuConfig set up */
+	ret = fu_engine_load(engine, FU_ENGINE_LOAD_FLAG_NO_CACHE, progress, &error);
+	g_assert_no_error(error);
+	g_assert_true(ret);
+
+	/* add a wireless (worse) device */
+	fu_device_set_id(device1, "99249eb1bd9ef0b6e192b271a8cb6a3090cfec7a");
+	fu_device_set_name(device1, "device1");
+	fu_device_build_vendor_id_u16(device1, "USB", 0xFFFF);
+	fu_device_add_protocol(device1, "com.acme");
+	fu_device_add_guid(device1, "2d47f29b-83a2-4f31-a2e8-63474f4d4c2e");
+	fu_device_add_flag(device1, FWUPD_DEVICE_FLAG_UPDATABLE);
+	fu_device_add_flag(device1, FWUPD_DEVICE_FLAG_UNSIGNED_PAYLOAD);
+	fu_engine_add_device(engine, device1);
+
+	/* add a wired (better) device */
+	fu_device_set_id(device2, "1a8d0d9a96ad3e67ba76cf3033623625dc6d6882");
+	fu_device_set_name(device2, "device2");
+	fu_device_set_equivalent_id(device2, "99249eb1bd9ef0b6e192b271a8cb6a3090cfec7a");
+	fu_device_set_priority(device2, 999);
+	fu_device_build_vendor_id_u16(device2, "USB", 0xFFFF);
+	fu_device_add_protocol(device2, "com.acme");
+	fu_device_add_guid(device2, "2d47f29b-83a2-4f31-a2e8-63474f4d4c2e");
+	fu_device_add_flag(device2, FWUPD_DEVICE_FLAG_UPDATABLE);
+	fu_device_add_flag(device2, FWUPD_DEVICE_FLAG_UNSIGNED_PAYLOAD);
+	fu_engine_add_device(engine, device2);
+
+	/* make sure the daemon chooses the best device */
+	devices = fu_engine_get_devices(engine, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(devices);
+	g_assert_cmpint(devices->len, ==, 2);
+	device_best = fu_engine_get_device(engine, "9924", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(device_best);
+	g_assert_cmpstr(fu_device_get_id(device_best),
+			==,
+			"1a8d0d9a96ad3e67ba76cf3033623625dc6d6882");
+	g_assert_true(fu_device_has_flag(device_best, FWUPD_DEVICE_FLAG_UPDATABLE));
+	g_assert_false(fu_device_has_problem(device_best, FWUPD_DEVICE_PROBLEM_LOWER_PRIORITY));
+
+	/* get the worst device and make sure it's not updatable */
+	for (guint i = 0; i < devices->len; i++) {
+		FuDevice *device_tmp = g_ptr_array_index(devices, i);
+		if (device_tmp != device_best) {
+			device_worst = g_object_ref(device_tmp);
+			break;
+		}
+	}
+	g_assert_nonnull(device_worst);
+	g_assert_false(fu_device_has_flag(device_worst, FWUPD_DEVICE_FLAG_UPDATABLE));
+	g_assert_true(fu_device_has_problem(device_worst, FWUPD_DEVICE_PROBLEM_LOWER_PRIORITY));
 }
 
 static void
@@ -3754,6 +3824,66 @@ fu_device_list_counterpart_func(gconstpointer user_data)
 	/* should not have *visible* GUID of runtime */
 	g_assert_false(fu_device_has_guid(device2, "runtime"));
 	g_assert_true(fu_device_has_counterpart_guid(device2, "runtime"));
+}
+
+static void
+fu_device_list_equivalent_id_func(gconstpointer user_data)
+{
+	FuTest *self = (FuTest *)user_data;
+	g_autoptr(FuDevice) device1 = fu_device_new(self->ctx);
+	g_autoptr(FuDevice) device2 = fu_device_new(self->ctx);
+	g_autoptr(FuDevice) device = NULL;
+	g_autoptr(FuDeviceList) device_list = fu_device_list_new();
+	g_autoptr(GError) error = NULL;
+
+	fu_device_set_id(device1, "8e9cb71aeca70d2faedb5b8aaa263f6175086b2e");
+	fu_device_list_add(device_list, device1);
+
+	fu_device_set_id(device2, "1a8d0d9a96ad3e67ba76cf3033623625dc6d6882");
+	fu_device_set_equivalent_id(device2, "8e9cb71aeca70d2faedb5b8aaa263f6175086b2e");
+	fu_device_set_priority(device2, 999);
+	fu_device_list_add(device_list, device2);
+
+	device = fu_device_list_get_by_id(device_list, "8e9c", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(device);
+	g_assert_cmpstr(fu_device_get_id(device), ==, "1a8d0d9a96ad3e67ba76cf3033623625dc6d6882");
+}
+
+static void
+fu_device_list_unconnected_no_delay_func(gconstpointer user_data)
+{
+	FuTest *self = (FuTest *)user_data;
+	g_autoptr(FuDeviceList) device_list = fu_device_list_new();
+	g_autoptr(FuDevice) device1 = fu_device_new(self->ctx);
+	g_autoptr(FuDevice) device2 = fu_device_new(self->ctx);
+
+	fu_device_set_id(device1, "device1");
+	fu_device_add_flag(device1, FWUPD_DEVICE_FLAG_UPDATABLE);
+	fu_device_add_instance_id(device1, "foobar");
+	fu_device_convert_instance_ids(device1);
+	fu_device_list_add(device_list, device1);
+	g_assert_false(fu_device_has_private_flag(device1, FU_DEVICE_PRIVATE_FLAG_UNCONNECTED));
+
+	/* remove */
+	fu_device_list_remove(device_list, device1);
+	g_assert_true(fu_device_has_private_flag(device1, FU_DEVICE_PRIVATE_FLAG_UNCONNECTED));
+
+	/* add back exact same device, then remove */
+	fu_device_list_add(device_list, device1);
+	g_assert_false(fu_device_has_private_flag(device1, FU_DEVICE_PRIVATE_FLAG_UNCONNECTED));
+	fu_device_list_remove(device_list, device1);
+	g_assert_true(fu_device_has_private_flag(device1, FU_DEVICE_PRIVATE_FLAG_UNCONNECTED));
+
+	/* add back device with same ID, then remove */
+	fu_device_set_id(device2, "device1");
+	fu_device_add_flag(device2, FWUPD_DEVICE_FLAG_UPDATABLE);
+	fu_device_add_instance_id(device2, "foobar");
+	fu_device_convert_instance_ids(device2);
+	fu_device_list_add(device_list, device2);
+	g_assert_false(fu_device_has_private_flag(device2, FU_DEVICE_PRIVATE_FLAG_UNCONNECTED));
+	fu_device_list_remove(device_list, device2);
+	g_assert_true(fu_device_has_private_flag(device2, FU_DEVICE_PRIVATE_FLAG_UNCONNECTED));
 }
 
 static void
@@ -6164,6 +6294,8 @@ fu_config_set_plugin_defaults(FuConfig *config)
 	fu_config_set_default(config, "uefi-capsule", "OverrideESPMountPoint", NULL);
 	fu_config_set_default(config, "uefi-capsule", "RebootCleanup", "true");
 	fu_config_set_default(config, "uefi-capsule", "RequireESPFreeSpace", "0");
+	fu_config_set_default(config, "uefi-capsule", "ScreenWidth", "0");
+	fu_config_set_default(config, "uefi-capsule", "ScreenHeight", "0");
 }
 
 static void
@@ -6296,9 +6428,8 @@ fu_test_engine_fake_hidraw(gconstpointer user_data)
 	g_assert_cmpstr(fu_udev_device_get_subsystem(FU_UDEV_DEVICE(device)), ==, "hidraw");
 	g_assert_cmpstr(fu_udev_device_get_devtype(FU_UDEV_DEVICE(device)), ==, NULL);
 	g_assert_cmpstr(fu_udev_device_get_driver(FU_UDEV_DEVICE(device)), ==, NULL);
-	g_assert_cmpint(fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)), ==, 0x093a);
-	g_assert_cmpint(fu_udev_device_get_model(FU_UDEV_DEVICE(device)), ==, 0x2862);
-	g_assert_cmpint(fu_udev_device_get_revision(FU_UDEV_DEVICE(device)), ==, 0x0);
+	g_assert_cmpint(fu_device_get_vid(device), ==, 0x093a);
+	g_assert_cmpint(fu_device_get_pid(device), ==, 0x2862);
 	g_assert_cmpstr(fu_device_get_plugin(device), ==, "pixart_rf");
 	g_assert_cmpstr(fu_device_get_name(device), ==, "PIXART Pixart dual-mode mouse");
 	g_assert_cmpstr(fu_device_get_physical_id(device), ==, "usb-0000:00:14.0-1/input1");
@@ -6355,9 +6486,8 @@ fu_test_engine_fake_usb(gconstpointer user_data)
 	g_assert_cmpstr(fu_udev_device_get_subsystem(FU_UDEV_DEVICE(device)), ==, "usb");
 	g_assert_cmpstr(fu_udev_device_get_devtype(FU_UDEV_DEVICE(device)), ==, "usb_device");
 	g_assert_cmpstr(fu_udev_device_get_driver(FU_UDEV_DEVICE(device)), ==, "usb");
-	g_assert_cmpint(fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)), ==, 0x093a);
-	g_assert_cmpint(fu_udev_device_get_model(FU_UDEV_DEVICE(device)), ==, 0x2862);
-	g_assert_cmpint(fu_udev_device_get_revision(FU_UDEV_DEVICE(device)), ==, 0x0);
+	g_assert_cmpint(fu_device_get_vid(device), ==, 0x093a);
+	g_assert_cmpint(fu_device_get_pid(device), ==, 0x2862);
 	g_assert_cmpstr(fu_device_get_plugin(device), ==, "colorhug");
 	g_assert_cmpstr(fu_device_get_physical_id(device), ==, "1-1");
 	g_assert_cmpstr(fu_device_get_logical_id(device), ==, NULL);
@@ -6392,12 +6522,46 @@ fu_test_engine_fake_pci(gconstpointer user_data)
 	g_assert_cmpstr(fu_udev_device_get_driver(FU_UDEV_DEVICE(device)), ==, NULL);
 	g_assert_true(
 	    g_str_has_suffix(fu_udev_device_get_device_file(FU_UDEV_DEVICE(device)), "/rom"));
-	g_assert_cmpint(fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)), ==, 0x8086);
-	g_assert_cmpint(fu_udev_device_get_model(FU_UDEV_DEVICE(device)), ==, 0x06ed);
-	g_assert_cmpint(fu_udev_device_get_revision(FU_UDEV_DEVICE(device)), ==, 0x0);
+	g_assert_cmpint(fu_device_get_vid(device), ==, 0x8086);
+	g_assert_cmpint(fu_device_get_pid(device), ==, 0x06ed);
 	g_assert_cmpstr(fu_device_get_plugin(device), ==, "optionrom");
 	g_assert_cmpstr(fu_device_get_physical_id(device), ==, "PCI_SLOT_NAME=0000:00:14.0");
 	g_assert_cmpstr(fu_device_get_logical_id(device), ==, "rom");
+}
+
+static void
+fu_test_engine_fake_v4l(gconstpointer user_data)
+{
+	FuTest *self = (FuTest *)user_data;
+	gboolean ret;
+	g_autoptr(FuDevice) device = NULL;
+	g_autoptr(FuEngine) engine = fu_engine_new(self->ctx);
+	g_autoptr(FuProgress) progress = fu_progress_new(G_STRLOC);
+	g_autoptr(GError) error = NULL;
+
+	/* load engine and check the device was found */
+	fu_engine_add_plugin_filter(engine, "logitech_tap");
+	ret = fu_engine_load(engine,
+			     FU_ENGINE_LOAD_FLAG_COLDPLUG | FU_ENGINE_LOAD_FLAG_BUILTIN_PLUGINS |
+				 FU_ENGINE_LOAD_FLAG_NO_IDLE_SOURCES | FU_ENGINE_LOAD_FLAG_READONLY,
+			     progress,
+			     &error);
+	g_assert_no_error(error);
+	g_assert_true(ret);
+
+	/* v4l -> logitech_tap */
+	device = fu_engine_get_device(engine, "d787669ee4a103fe0b361fe31c10ea037c72f27c", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(device);
+	g_assert_cmpstr(fu_udev_device_get_subsystem(FU_UDEV_DEVICE(device)), ==, "video4linux");
+	g_assert_cmpstr(fu_udev_device_get_devtype(FU_UDEV_DEVICE(device)), ==, NULL);
+	g_assert_cmpstr(fu_udev_device_get_driver(FU_UDEV_DEVICE(device)), ==, NULL);
+	g_assert_cmpint(fu_device_get_vid(device), ==, 0x093A);
+	g_assert_cmpint(fu_device_get_pid(device), ==, 0x2862);
+	g_assert_cmpint(fu_v4l_device_get_index(FU_V4L_DEVICE(device)), ==, 0);
+	g_assert_cmpint(fu_v4l_device_get_caps(FU_V4L_DEVICE(device)), ==, FU_V4L_CAP_NONE);
+	g_assert_cmpstr(fu_device_get_name(device), ==, "Integrated Camera: Integrated C");
+	g_assert_cmpstr(fu_device_get_plugin(device), ==, "logitech_tap");
 }
 
 static void
@@ -6429,8 +6593,8 @@ fu_test_engine_fake_nvme(gconstpointer user_data)
 	g_assert_cmpint(fu_udev_device_get_number(FU_UDEV_DEVICE(device)), ==, 1);
 	g_assert_cmpstr(fu_udev_device_get_driver(FU_UDEV_DEVICE(device)), ==, NULL);
 	g_assert_cmpstr(fu_udev_device_get_device_file(FU_UDEV_DEVICE(device)), ==, "/dev/nvme1");
-	g_assert_cmpint(fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)), ==, 0x1179);
-	g_assert_cmpint(fu_udev_device_get_model(FU_UDEV_DEVICE(device)), ==, 0x010F);
+	g_assert_cmpint(fu_device_get_vid(device), ==, 0x1179);
+	g_assert_cmpint(fu_device_get_pid(device), ==, 0x010F);
 	g_assert_true(fu_device_has_vendor_id(device, "PCI:0x1179"));
 	g_assert_cmpstr(fu_device_get_vendor(device), ==, "Toshiba Corporation");
 	g_assert_cmpstr(fu_device_get_plugin(device), ==, "nvme");
@@ -6466,9 +6630,8 @@ fu_test_engine_fake_serio(gconstpointer user_data)
 	g_assert_cmpstr(fu_udev_device_get_devtype(FU_UDEV_DEVICE(device)), ==, NULL);
 	g_assert_cmpstr(fu_udev_device_get_driver(FU_UDEV_DEVICE(device)), ==, "psmouse");
 	g_assert_cmpstr(fu_udev_device_get_device_file(FU_UDEV_DEVICE(device)), ==, NULL);
-	g_assert_cmpint(fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)), ==, 0x0);
-	g_assert_cmpint(fu_udev_device_get_model(FU_UDEV_DEVICE(device)), ==, 0x0);
-	g_assert_cmpint(fu_udev_device_get_revision(FU_UDEV_DEVICE(device)), ==, 0x0);
+	g_assert_cmpint(fu_device_get_vid(device), ==, 0x0);
+	g_assert_cmpint(fu_device_get_pid(device), ==, 0x0);
 	g_assert_cmpstr(fu_device_get_name(device), ==, "TouchStyk");
 	g_assert_cmpstr(fu_device_get_plugin(device), ==, "synaptics_rmi");
 	g_assert_cmpstr(fu_device_get_physical_id(device),
@@ -6498,6 +6661,12 @@ fu_test_engine_fake_tpm(gconstpointer user_data)
 	g_assert_no_error(error);
 	g_assert_true(ret);
 
+	/* no tss2-esys */
+	if (fu_engine_get_plugin_by_name(engine, "tpm", &error) == NULL) {
+		g_test_skip(error->message);
+		return;
+	}
+
 	/* tpm */
 	device = fu_engine_get_device(engine, "1d8d50a4dbc65618f5c399c2ae827b632b3ccc11", &error);
 	g_assert_no_error(error);
@@ -6506,9 +6675,8 @@ fu_test_engine_fake_tpm(gconstpointer user_data)
 	g_assert_cmpstr(fu_udev_device_get_devtype(FU_UDEV_DEVICE(device)), ==, NULL);
 	g_assert_cmpstr(fu_udev_device_get_driver(FU_UDEV_DEVICE(device)), ==, NULL);
 	g_assert_cmpstr(fu_udev_device_get_device_file(FU_UDEV_DEVICE(device)), ==, "/dev/tpm0");
-	g_assert_cmpint(fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)), ==, 0x0);
-	g_assert_cmpint(fu_udev_device_get_model(FU_UDEV_DEVICE(device)), ==, 0x0);
-	g_assert_cmpint(fu_udev_device_get_revision(FU_UDEV_DEVICE(device)), ==, 0x0);
+	g_assert_cmpint(fu_device_get_vid(device), ==, 0x0);
+	g_assert_cmpint(fu_device_get_pid(device), ==, 0x0);
 	g_assert_cmpstr(fu_device_get_plugin(device), ==, "tpm");
 	g_assert_cmpstr(fu_device_get_physical_id(device), ==, "DEVNAME=tpm0");
 	g_assert_cmpstr(fu_device_get_logical_id(device), ==, NULL);
@@ -6542,9 +6710,8 @@ fu_test_engine_fake_mei(gconstpointer user_data)
 	g_assert_cmpstr(fu_udev_device_get_devtype(FU_UDEV_DEVICE(device)), ==, NULL);
 	g_assert_cmpstr(fu_udev_device_get_driver(FU_UDEV_DEVICE(device)), ==, NULL);
 	g_assert_cmpstr(fu_udev_device_get_device_file(FU_UDEV_DEVICE(device)), ==, "/dev/mei0");
-	g_assert_cmpint(fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)), ==, 0x8086);
-	g_assert_cmpint(fu_udev_device_get_model(FU_UDEV_DEVICE(device)), ==, 0x06E0);
-	g_assert_cmpint(fu_udev_device_get_revision(FU_UDEV_DEVICE(device)), ==, 0x0);
+	g_assert_cmpint(fu_device_get_vid(device), ==, 0x8086);
+	g_assert_cmpint(fu_device_get_pid(device), ==, 0x06E0);
 	g_assert_cmpstr(fu_device_get_plugin(device), ==, "intel_me");
 	g_assert_cmpstr(fu_device_get_physical_id(device), ==, "PCI_SLOT_NAME=0000:00:16.0");
 	g_assert_cmpstr(fu_device_get_logical_id(device), ==, "AMT");
@@ -6645,6 +6812,12 @@ main(int argc, char **argv)
 	g_test_add_func("/fwupd/cabinet", fu_common_cabinet_func);
 	g_test_add_data_func("/fwupd/security-attr", self, fu_security_attr_func);
 	g_test_add_data_func("/fwupd/device-list", self, fu_device_list_func);
+	g_test_add_data_func("/fwupd/device-list{unconnected-no-delay}",
+			     self,
+			     fu_device_list_unconnected_no_delay_func);
+	g_test_add_data_func("/fwupd/device-list{equivalent-id}",
+			     self,
+			     fu_device_list_equivalent_id_func);
 	g_test_add_data_func("/fwupd/device-list{delay}", self, fu_device_list_delay_func);
 	g_test_add_data_func("/fwupd/device-list{explicit-order}",
 			     self,
@@ -6685,6 +6858,9 @@ main(int argc, char **argv)
 			     self,
 			     fu_engine_get_details_missing_func);
 	g_test_add_data_func("/fwupd/engine{device-unlock}", self, fu_engine_device_unlock_func);
+	g_test_add_data_func("/fwupd/engine{device-equivalent}",
+			     self,
+			     fu_engine_device_equivalent_func);
 	g_test_add_data_func("/fwupd/engine{device-md-set-flags}",
 			     self,
 			     fu_engine_device_md_set_flags_func);
@@ -6704,6 +6880,7 @@ main(int argc, char **argv)
 	g_test_add_data_func("/fwupd/engine{fake-mei}", self, fu_test_engine_fake_mei);
 	g_test_add_data_func("/fwupd/engine{fake-tpm}", self, fu_test_engine_fake_tpm);
 	g_test_add_data_func("/fwupd/engine{fake-pci}", self, fu_test_engine_fake_pci);
+	g_test_add_data_func("/fwupd/engine{fake-v4l}", self, fu_test_engine_fake_v4l);
 	if (g_test_slow()) {
 		g_test_add_data_func("/fwupd/device-list{replug-auto}",
 				     self,

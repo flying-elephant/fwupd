@@ -268,6 +268,53 @@ fu_engine_generic_notify_cb(FuDevice *device, GParamSpec *pspec, FuEngine *self)
 }
 
 static void
+fu_engine_ensure_device_problem_priority_full(FuEngine *self,
+					      FuDevice *device,
+					      FuDevice *device_tmp)
+{
+	/* not a match */
+	if (g_strcmp0(fu_device_get_id(device_tmp), fu_device_get_equivalent_id(device)) != 0 &&
+	    g_strcmp0(fu_device_get_equivalent_id(device_tmp), fu_device_get_id(device)) != 0)
+		return;
+
+	/* new device is better */
+	if (fu_device_get_priority(device_tmp) < fu_device_get_priority(device)) {
+		fu_device_add_problem(device_tmp, FWUPD_DEVICE_PROBLEM_LOWER_PRIORITY);
+		fu_device_remove_problem(device, FWUPD_DEVICE_PROBLEM_LOWER_PRIORITY);
+		return;
+	}
+
+	/* old device is better */
+	if (fu_device_get_priority(device_tmp) > fu_device_get_priority(device)) {
+		fu_device_remove_problem(device_tmp, FWUPD_DEVICE_PROBLEM_LOWER_PRIORITY);
+		fu_device_add_problem(device, FWUPD_DEVICE_PROBLEM_LOWER_PRIORITY);
+		return;
+	}
+
+	/* the plugin needs to tell us which one is better! */
+	g_warning("no priority difference, unsetting both");
+	fu_device_remove_problem(device, FWUPD_DEVICE_PROBLEM_LOWER_PRIORITY);
+	fu_device_remove_problem(device_tmp, FWUPD_DEVICE_PROBLEM_LOWER_PRIORITY);
+}
+
+static void
+fu_engine_ensure_device_problem_priority(FuEngine *self, FuDevice *device)
+{
+	g_autoptr(GPtrArray) devices = fu_device_list_get_active(self->device_list);
+	for (guint i = 0; i < devices->len; i++) {
+		FuDevice *device_tmp = g_ptr_array_index(devices, i);
+		fu_engine_ensure_device_problem_priority_full(self, device, device_tmp);
+	}
+}
+
+static void
+fu_engine_device_equivalent_id_notify_cb(FuDevice *device, GParamSpec *pspec, FuEngine *self)
+{
+	/* make sure the lower priority equivalent device has the problem */
+	fu_engine_ensure_device_problem_priority(self, device);
+}
+
+static void
 fu_engine_history_notify_cb(FuDevice *device, GParamSpec *pspec, FuEngine *self)
 {
 	if (self->write_history) {
@@ -331,6 +378,10 @@ fu_engine_watch_device(FuEngine *self, FuDevice *device)
 	g_signal_connect(FU_DEVICE(device),
 			 "notify::update-error",
 			 G_CALLBACK(fu_engine_history_notify_cb),
+			 self);
+	g_signal_connect(FU_DEVICE(device),
+			 "notify::equivalent-id",
+			 G_CALLBACK(fu_engine_device_equivalent_id_notify_cb),
 			 self);
 	g_signal_connect(FU_DEVICE(device),
 			 "request",
@@ -432,6 +483,7 @@ static void
 fu_engine_device_added_cb(FuDeviceList *device_list, FuDevice *device, FuEngine *self)
 {
 	fu_engine_watch_device(self, device);
+	fu_engine_ensure_device_problem_priority(self, device);
 	fu_engine_ensure_device_power_inhibit(self, device);
 	fu_engine_ensure_device_lid_inhibit(self, device);
 	fu_engine_ensure_device_display_required_inhibit(self, device);
@@ -1620,28 +1672,99 @@ fu_engine_get_report_metadata_cpu_device(FuEngine *self, GHashTable *hash)
 static gboolean
 fu_engine_get_report_metadata_os_release(GHashTable *hash, GError **error)
 {
-	g_autoptr(GHashTable) os_release = NULL;
+#ifdef HOST_MACHINE_SYSTEM_DARWIN
+	g_autofree gchar *stdout = NULL;
+	g_autofree gchar *sw_vers = g_find_program_in_path("sw_vers");
+	g_auto(GStrv) split = NULL;
 	struct {
 		const gchar *key;
 		const gchar *val;
-	} distro_kv[] = {{"ID", FWUPD_RESULT_KEY_DISTRO_ID},
-			 {"NAME", "DistroName"},
-			 {"PRETTY_NAME", "DistroPrettyName"},
-			 {"VERSION_ID", FWUPD_RESULT_KEY_DISTRO_VERSION},
+	} kvs[] = {{"ProductName:", "DistroName"},
+		   {"ProductVersion:", FWUPD_RESULT_KEY_DISTRO_VERSION},
+		   {"BuildVersion:", FWUPD_RESULT_KEY_DISTRO_VARIANT},
+		   {NULL, NULL}};
+
+	/* macOS */
+	if (sw_vers == NULL) {
+		g_set_error_literal(error, FWUPD_ERROR, FWUPD_ERROR_READ, "No os-release found");
+		return FALSE;
+	}
+
+	/* parse from format:
+	 *    ProductName:    Mac OS X
+	 *    ProductVersion: 10.14.6
+	 *    BuildVersion:   18G103
+	 */
+	if (!g_spawn_command_line_sync(sw_vers, &stdout, NULL, NULL, error))
+		return FALSE;
+	split = g_strsplit(stdout, "\n", -1);
+	for (guint j = 0; split[j] != NULL; j++) {
+		for (guint i = 0; kvs[i].key != NULL; i++) {
+			if (g_str_has_prefix(split[j], kvs[i].key)) {
+				g_autofree gchar *tmp = g_strdup(split[j] + strlen(kvs[i].key));
+				g_hash_table_insert(hash,
+						    g_strdup(kvs[i].val),
+						    g_strdup(g_strstrip(tmp)));
+			}
+		}
+	}
+	g_hash_table_insert(hash, g_strdup(FWUPD_RESULT_KEY_DISTRO_ID), g_strdup("macos"));
+#else
+	struct {
+		const gchar *key;
+		const gchar *val;
+	} distro_kv[] = {{G_OS_INFO_KEY_ID, FWUPD_RESULT_KEY_DISTRO_ID},
+			 {G_OS_INFO_KEY_NAME, "DistroName"},
+			 {G_OS_INFO_KEY_PRETTY_NAME, "DistroPrettyName"},
+			 {G_OS_INFO_KEY_VERSION_ID, FWUPD_RESULT_KEY_DISTRO_VERSION},
 			 {"VARIANT_ID", FWUPD_RESULT_KEY_DISTRO_VARIANT},
 			 {NULL, NULL}};
 
 	/* get all required os-release keys */
-	os_release = fwupd_get_os_release(error);
-	if (os_release == NULL)
-		return FALSE;
 	for (guint i = 0; distro_kv[i].key != NULL; i++) {
-		const gchar *tmp = g_hash_table_lookup(os_release, distro_kv[i].key);
+		g_autofree gchar *tmp = g_get_os_info(distro_kv[i].key);
 		if (tmp != NULL) {
-			g_hash_table_insert(hash, g_strdup(distro_kv[i].val), g_strdup(tmp));
+			g_hash_table_insert(hash,
+					    g_strdup(distro_kv[i].val),
+					    g_steal_pointer(&tmp));
 		}
 	}
+#endif
 	return TRUE;
+}
+
+static GHashTable *
+fu_engine_load_os_release(const gchar *filename, GError **error)
+{
+	g_autofree gchar *buf = NULL;
+	g_autofree gchar *filename2 = g_strdup(filename);
+	g_auto(GStrv) lines = NULL;
+	g_autoptr(GHashTable) hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+	/* load each line */
+	if (!g_file_get_contents(filename2, &buf, NULL, error))
+		return NULL;
+	lines = g_strsplit(buf, "\n", -1);
+	for (guint i = 0; lines[i] != NULL; i++) {
+		gsize len, off = 0;
+		g_auto(GStrv) split = NULL;
+
+		/* split up into sections */
+		split = g_strsplit(lines[i], "=", 2);
+		if (g_strv_length(split) < 2)
+			continue;
+
+		/* remove double quotes if set both ends */
+		len = strlen(split[1]);
+		if (len == 0)
+			continue;
+		if (split[1][0] == '\"' && split[1][len - 1] == '\"') {
+			off++;
+			len -= 2;
+		}
+		g_hash_table_insert(hash, g_strdup(split[0]), g_strndup(split[1] + off, len));
+	}
+	return g_steal_pointer(&hash);
 }
 
 static gboolean
@@ -1657,7 +1780,7 @@ fu_engine_get_report_metadata_lsb_release(GHashTable *hash, GError **error)
 			 {NULL, NULL}};
 	if (!g_file_test(fn, G_FILE_TEST_EXISTS))
 		return TRUE;
-	os_release = fwupd_get_os_release_full(fn, error);
+	os_release = fu_engine_load_os_release(fn, error);
 	if (os_release == NULL)
 		return FALSE;
 	for (guint i = 0; distro_kv[i].key != NULL; i++) {
@@ -4412,7 +4535,7 @@ fu_engine_get_result_from_component(FuEngine *self,
 			continue;
 		device = fu_device_list_get_by_guid(self->device_list, guid, NULL);
 		if (device != NULL) {
-			fu_device_incorporate(dev, device);
+			fu_device_incorporate(dev, device, FU_DEVICE_INCORPORATE_FLAG_ALL);
 		} else {
 			fu_device_inhibit(dev, "not-found", "Device was not found");
 		}
@@ -5080,14 +5203,12 @@ fu_engine_add_releases_for_device_component(FuEngine *self,
 
 		/* add update message if exists but device doesn't already have one */
 		update_message = fwupd_release_get_update_message(FWUPD_RELEASE(release));
-		if (fwupd_device_get_update_message(FWUPD_DEVICE(device)) == NULL &&
-		    update_message != NULL) {
+		if (fu_device_get_update_message(device) == NULL && update_message != NULL) {
 			fu_device_set_update_message(device, update_message);
 		}
 		update_image = fwupd_release_get_update_image(FWUPD_RELEASE(release));
-		if (fwupd_device_get_update_image(FWUPD_DEVICE(device)) == NULL &&
-		    update_image != NULL) {
-			fwupd_device_set_update_image(FWUPD_DEVICE(device), update_image);
+		if (fu_device_get_update_image(device) == NULL && update_image != NULL) {
+			fu_device_set_update_image(device, update_image);
 		}
 		update_request_id = fu_release_get_update_request_id(release);
 		if (fu_device_get_update_request_id(device) == NULL && update_request_id != NULL) {
@@ -7498,7 +7619,7 @@ fu_engine_backend_device_changed_cb(FuBackend *backend, FuDevice *device, FuEngi
 		if (g_strcmp0(fu_device_get_backend_id(device_tmp),
 			      fu_device_get_backend_id(device)) == 0) {
 			g_debug("incorporating new device for %s", fu_device_get_id(device_tmp));
-			fu_device_incorporate(device_tmp, device);
+			fu_device_incorporate(device_tmp, device, FU_DEVICE_INCORPORATE_FLAG_ALL);
 		}
 	}
 
@@ -8698,6 +8819,12 @@ fu_engine_constructed(GObject *obj)
 #endif
 
 	fu_context_add_compile_version(self->ctx, "org.freedesktop.fwupd", VERSION);
+#ifdef SOURCE_VERSION
+	if (g_strcmp0(SOURCE_VERSION, VERSION) != 0)
+		fu_context_add_compile_version(self->ctx,
+					       "org.freedesktop.fwupd.source",
+					       SOURCE_VERSION);
+#endif
 	fu_context_add_compile_version(self->ctx, "info.libusb", LIBUSB_VERSION);
 #ifdef HAVE_PASSIM
 	{

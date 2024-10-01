@@ -57,7 +57,7 @@ fu_vli_usbhub_device_to_string(FuDevice *device, guint idt, GString *str)
 static guint8
 fu_vli_usbhub_device_header_crc8(GByteArray *hdr)
 {
-	return ~fu_crc8(hdr->data, hdr->len - 1);
+	return fu_crc8(FU_CRC_KIND_B8_STANDARD, hdr->data, hdr->len - 1);
 }
 
 static gboolean
@@ -480,7 +480,7 @@ fu_vli_usbhub_device_guess_kind(FuVliUsbhubDevice *self, GError **error)
 	guint8 chipid22 = 0x0;
 	guint8 chipver = 0x0;
 	guint8 chipver2 = 0x0;
-	gint tPid = fu_usb_device_get_pid(FU_USB_DEVICE(self)) & 0x0fff;
+	gint tPid = fu_device_get_pid(FU_DEVICE(self)) & 0x0fff;
 
 	if (!fu_vli_usbhub_device_read_reg(self, 0xf88c, &chipver, error)) {
 		g_prefix_error(error, "Read_ChipVer failed: ");

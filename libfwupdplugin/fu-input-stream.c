@@ -497,7 +497,7 @@ fu_input_stream_compute_sum16(GInputStream *stream, guint16 *value, GError **err
 }
 
 typedef struct {
-	FuCrc32Kind kind;
+	FuCrcKind kind;
 	guint32 crc;
 } FuInputStreamComputeCrc32Helper;
 
@@ -512,7 +512,7 @@ fu_input_stream_compute_crc32_cb(const guint8 *buf, gsize bufsz, gpointer user_d
 /**
  * fu_input_stream_compute_crc32:
  * @stream: a #GInputStream
- * @kind: a #FuCrc32Kind, typically %FU_CRC32_KIND_STANDARD
+ * @kind: a #FuCrcKind, typically %FU_CRC_KIND_B32_STANDARD
  * @crc: (inout): initial and final CRC value
  * @error: (nullable): optional return location for an error
  *
@@ -526,7 +526,7 @@ fu_input_stream_compute_crc32_cb(const guint8 *buf, gsize bufsz, gpointer user_d
  * Since: 2.0.0
  **/
 gboolean
-fu_input_stream_compute_crc32(GInputStream *stream, FuCrc32Kind kind, guint32 *crc, GError **error)
+fu_input_stream_compute_crc32(GInputStream *stream, FuCrcKind kind, guint32 *crc, GError **error)
 {
 	FuInputStreamComputeCrc32Helper helper = {.crc = *crc, .kind = kind};
 	g_return_val_if_fail(G_IS_INPUT_STREAM(stream), FALSE);
@@ -539,28 +539,28 @@ fu_input_stream_compute_crc32(GInputStream *stream, FuCrc32Kind kind, guint32 *c
 }
 
 typedef struct {
+	FuCrcKind kind;
 	guint16 crc;
-	guint16 polynomial;
 } FuInputStreamComputeCrc16Helper;
 
 static gboolean
 fu_input_stream_compute_crc16_cb(const guint8 *buf, gsize bufsz, gpointer user_data, GError **error)
 {
 	FuInputStreamComputeCrc16Helper *helper = (FuInputStreamComputeCrc16Helper *)user_data;
-	helper->crc = fu_crc16_full(buf, bufsz, ~helper->crc, helper->polynomial);
+	helper->crc = fu_crc16_step(helper->kind, buf, bufsz, helper->crc);
 	return TRUE;
 }
 
 /**
  * fu_input_stream_compute_crc16:
  * @stream: a #GInputStream
- * @crc: (out): initial and final CRC value, typically 0x0
- * @polynomial: CRC polynomial, typically 0xA001
+ * @kind: a #FuCrcKind, typically %FU_CRC_KIND_B16_XMODEM
+ * @crc: (inout): initial and final CRC value
  * @error: (nullable): optional return location for an error
  *
  * Returns the cyclic redundancy check value for the given memory buffer.
  *
- * NOTE: The initial @crc differs from fu_crc16_full() in that it is inverted (to make it
+ * NOTE: The initial @crc differs from fu_crc16() in that it is inverted (to make it
  * symmetrical, and chainable), so for most uses you want to use the value of 0x0, not 0xFFFF.
  *
  * Returns: %TRUE for success
@@ -568,18 +568,15 @@ fu_input_stream_compute_crc16_cb(const guint8 *buf, gsize bufsz, gpointer user_d
  * Since: 2.0.0
  **/
 gboolean
-fu_input_stream_compute_crc16(GInputStream *stream,
-			      guint16 *crc,
-			      guint16 polynomial,
-			      GError **error)
+fu_input_stream_compute_crc16(GInputStream *stream, FuCrcKind kind, guint16 *crc, GError **error)
 {
-	FuInputStreamComputeCrc16Helper helper = {.crc = *crc, .polynomial = polynomial};
+	FuInputStreamComputeCrc16Helper helper = {.crc = *crc, .kind = kind};
 	g_return_val_if_fail(G_IS_INPUT_STREAM(stream), FALSE);
 	g_return_val_if_fail(crc != NULL, FALSE);
 	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
 	if (!fu_input_stream_chunkify(stream, fu_input_stream_compute_crc16_cb, &helper, error))
 		return FALSE;
-	*crc = helper.crc;
+	*crc = fu_crc16_done(kind, helper.crc);
 	return TRUE;
 }
 
@@ -620,4 +617,75 @@ fu_input_stream_chunkify(GInputStream *stream,
 			return FALSE;
 	}
 	return TRUE;
+}
+
+/**
+ * fu_input_stream_find:
+ * @stream: a #GInputStream
+ * @buf: input buffer to look for
+ * @bufsz: size of @buf
+ * @offset: (nullable): found offset
+ * @error: (nullable): optional return location for an error
+ *
+ * Find a memory buffer within an input stream, without loading the entire stream into a buffer.
+ *
+ * Returns: %TRUE if @buf was found
+ *
+ * Since: 2.0.0
+ **/
+gboolean
+fu_input_stream_find(GInputStream *stream,
+		     const guint8 *buf,
+		     gsize bufsz,
+		     gsize *offset,
+		     GError **error)
+{
+	g_autoptr(GByteArray) buf_acc = g_byte_array_new();
+	const gsize blocksz = 0x10000;
+	gsize offset_add = 0;
+	gsize offset_cur = 0;
+
+	g_return_val_if_fail(G_IS_INPUT_STREAM(stream), FALSE);
+	g_return_val_if_fail(buf != NULL, FALSE);
+	g_return_val_if_fail(bufsz != 0, FALSE);
+	g_return_val_if_fail(bufsz < blocksz, FALSE);
+	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
+
+	while (offset_cur < bufsz) {
+		g_autoptr(GByteArray) buf_tmp = NULL;
+		g_autoptr(GError) error_local = NULL;
+
+		/* read more data */
+		buf_tmp =
+		    fu_input_stream_read_byte_array(stream, offset_cur, blocksz, &error_local);
+		if (buf_tmp == NULL) {
+			if (g_error_matches(error_local, FWUPD_ERROR, FWUPD_ERROR_INVALID_FILE))
+				break;
+			g_propagate_error(error, g_steal_pointer(&error_local));
+			return FALSE;
+		}
+		g_byte_array_append(buf_acc, buf_tmp->data, buf_tmp->len);
+
+		/* we found something */
+		if (fu_memmem_safe(buf_acc->data, buf_acc->len, buf, bufsz, offset, NULL)) {
+			if (offset != NULL)
+				*offset += offset_add;
+			return TRUE;
+		}
+
+		/* truncate the buffer */
+		if (buf_acc->len > bufsz) {
+			offset_add += buf_acc->len - bufsz;
+			g_byte_array_remove_range(buf_acc, 0, buf_acc->len - bufsz);
+		}
+
+		/* move the offset */
+		offset_cur += buf_tmp->len;
+	}
+	g_set_error(error,
+		    FWUPD_ERROR,
+		    FWUPD_ERROR_NOT_FOUND,
+		    "failed to find buffer of size 0x%x",
+		    (guint)bufsz);
+	return FALSE;
 }

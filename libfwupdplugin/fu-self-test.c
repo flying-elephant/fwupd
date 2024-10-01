@@ -380,22 +380,23 @@ static void
 fu_common_crc_func(void)
 {
 	guint8 buf[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09};
-	g_assert_cmpint(fu_crc8(buf, sizeof(buf)), ==, 0x7A);
-	g_assert_cmpint(fu_crc16(buf, sizeof(buf)), ==, 0x4DF1);
+
+	g_assert_cmpint(fu_crc8(FU_CRC_KIND_B8_STANDARD, buf, sizeof(buf)), ==, (guint8)~0x7A);
+	g_assert_cmpint(fu_crc16(FU_CRC_KIND_B16_USB, buf, sizeof(buf)), ==, 0x4DF1);
 	g_assert_cmpint(fu_crc_misr16(0, buf, (sizeof(buf) / 2) * 2), ==, 0x40D);
 	g_assert_cmpint(fu_crc_misr16(0xFFFF, buf, (sizeof(buf) / 2) * 2), ==, 0xFBFA);
 
 	/* all the CRC32 variants, verified using https://crccalc.com/?method=CRC-32 */
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_STANDARD, buf, sizeof(buf)), ==, 0x40EFAB9E);
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_BZIP2, buf, sizeof(buf)), ==, 0x89AE7A5C);
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_JAMCRC, buf, sizeof(buf)), ==, 0xBF105461);
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_MPEG2, buf, sizeof(buf)), ==, 0x765185A3);
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_POSIX, buf, sizeof(buf)), ==, 0x037915C4);
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_SATA, buf, sizeof(buf)), ==, 0xBA55CCAC);
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_XFER, buf, sizeof(buf)), ==, 0x868E70FC);
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_C, buf, sizeof(buf)), ==, 0x5A14B9F9);
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_D, buf, sizeof(buf)), ==, 0x68AD8D3C);
-	g_assert_cmpint(fu_crc32(FU_CRC32_KIND_Q, buf, sizeof(buf)), ==, 0xE955C875);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_STANDARD, buf, sizeof(buf)), ==, 0x40EFAB9E);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_BZIP2, buf, sizeof(buf)), ==, 0x89AE7A5C);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_JAMCRC, buf, sizeof(buf)), ==, 0xBF105461);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_MPEG2, buf, sizeof(buf)), ==, 0x765185A3);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_POSIX, buf, sizeof(buf)), ==, 0x037915C4);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_SATA, buf, sizeof(buf)), ==, 0xBA55CCAC);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_XFER, buf, sizeof(buf)), ==, 0x868E70FC);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_C, buf, sizeof(buf)), ==, 0x5A14B9F9);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_D, buf, sizeof(buf)), ==, 0x68AD8D3C);
+	g_assert_cmpint(fu_crc32(FU_CRC_KIND_B32_Q, buf, sizeof(buf)), ==, 0xE955C875);
 }
 
 static void
@@ -489,6 +490,15 @@ fu_device_name_func(void)
 	fu_device_set_name(device2, "Intel(R) Core(TM) i7-10850H CPU @ 2.70GHz");
 	fu_device_set_vendor(device2, "Intel");
 	g_assert_cmpstr(fu_device_get_name(device2), ==, "Core™ i7-10850H CPU @ 2.70GHz");
+
+	/* name and vendor are the same */
+#ifndef SUPPORTED_BUILD
+	g_test_expect_message("FuDevice", G_LOG_LEVEL_WARNING, "name and vendor are the same*");
+#endif
+	fu_device_set_name(device2, "example");
+	fu_device_set_vendor(device2, "EXAMPLE");
+	g_assert_cmpstr(fu_device_get_name(device2), ==, "example");
+	g_assert_cmpstr(fu_device_get_vendor(device2), ==, "EXAMPLE");
 }
 
 static void
@@ -1883,6 +1893,32 @@ fu_device_func(void)
 }
 
 static void
+fu_device_event_donor_func(void)
+{
+	g_autoptr(FuDevice) device1 = fu_device_new(NULL);
+	g_autoptr(FuDevice) device2 = fu_device_new(NULL);
+	g_autoptr(FuDeviceEvent) event1 = fu_device_event_new("foo:bar:baz");
+	g_autoptr(FuDeviceEvent) event2 = fu_device_event_new("aaa:bbb:ccc");
+	g_autoptr(FuDeviceEvent) event3 = fu_device_event_new("foo:111:222");
+	GPtrArray *events;
+
+	fu_device_add_event(device1, event1);
+	fu_device_add_event(device2, event2);
+	fu_device_set_target(device1, device2);
+
+	/* did we incorporate */
+	events = fu_device_get_events(device2);
+	g_assert_nonnull(events);
+	g_assert_cmpint(events->len, ==, 2);
+
+	/* make sure it is redirected */
+	fu_device_add_event(device1, event3);
+	events = fu_device_get_events(device2);
+	g_assert_nonnull(events);
+	g_assert_cmpint(events->len, ==, 3);
+}
+
+static void
 fu_device_event_func(void)
 {
 	gboolean ret;
@@ -2275,12 +2311,35 @@ fu_device_incorporate_descendant_func(void)
 	fu_device_set_name(device, "FuDevice");
 	fu_device_set_summary(FU_DEVICE(test_device), "FuTestDevice");
 
-	fu_device_incorporate(FU_DEVICE(test_device), device);
+	fu_device_incorporate(FU_DEVICE(test_device), device, FU_DEVICE_INCORPORATE_FLAG_ALL);
 	g_assert_cmpstr(fu_device_get_name(FU_DEVICE(test_device)), ==, "FuDevice");
 
 	/* this won't explode as device_class->incorporate is checking types */
-	fu_device_incorporate(device, FU_DEVICE(test_device));
+	fu_device_incorporate(device, FU_DEVICE(test_device), FU_DEVICE_INCORPORATE_FLAG_ALL);
 	g_assert_cmpstr(fu_device_get_summary(device), ==, "FuTestDevice");
+}
+
+static void
+fu_device_incorporate_flag_func(void)
+{
+	g_autoptr(FuContext) ctx = fu_context_new();
+	g_autoptr(FuDevice) device = fu_device_new(ctx);
+	g_autoptr(FuDevice) donor = fu_device_new(ctx);
+
+	fu_device_set_logical_id(donor, "logi");
+	fu_device_set_physical_id(donor, "phys");
+	fu_device_add_vendor_id(donor, "PCI:0x1234");
+
+	fu_device_incorporate(device,
+			      donor,
+			      FU_DEVICE_INCORPORATE_FLAG_VENDOR_IDS |
+				  FU_DEVICE_INCORPORATE_FLAG_PHYSICAL_ID);
+	g_assert_cmpstr(fu_device_get_physical_id(device), ==, "phys");
+	g_assert_cmpstr(fu_device_get_logical_id(device), ==, NULL);
+	g_assert_true(fu_device_has_vendor_id(device, "PCI:0x1234"));
+
+	fu_device_incorporate(device, donor, FU_DEVICE_INCORPORATE_FLAG_ALL);
+	g_assert_cmpstr(fu_device_get_logical_id(device), ==, "logi");
 }
 
 static void
@@ -2298,7 +2357,7 @@ fu_device_incorporate_func(void)
 	g_assert_true(ret);
 
 	/* set up donor device */
-	fu_device_set_equivalent_id(donor, "equiv-id");
+	fu_device_set_equivalent_id(donor, "0000000000000000000000000000000000000000");
 	fu_device_set_metadata(donor, "test", "me");
 	fu_device_set_metadata(donor, "test2", "me");
 	fu_device_add_instance_str(donor, "VID", "0A5C");
@@ -2325,13 +2384,15 @@ fu_device_incorporate_func(void)
 	fu_device_add_icon(donor, "computer");
 
 	/* existing properties */
-	fu_device_set_equivalent_id(device, "DO_NOT_OVERWRITE");
+	fu_device_set_equivalent_id(device, "ffffffffffffffffffffffffffffffffffffffff");
 	fu_device_set_metadata(device, "test2", "DO_NOT_OVERWRITE");
 	fu_device_set_modified_usec(device, 1514340000ull * G_USEC_PER_SEC);
 
 	/* incorporate properties from donor to device */
-	fu_device_incorporate(device, donor);
-	g_assert_cmpstr(fu_device_get_equivalent_id(device), ==, "DO_NOT_OVERWRITE");
+	fu_device_incorporate(device, donor, FU_DEVICE_INCORPORATE_FLAG_ALL);
+	g_assert_cmpstr(fu_device_get_equivalent_id(device),
+			==,
+			"ffffffffffffffffffffffffffffffffffffffff");
 	g_assert_cmpstr(fu_device_get_metadata(device, "test"), ==, "me");
 	g_assert_cmpstr(fu_device_get_metadata(device, "test2"), ==, "DO_NOT_OVERWRITE");
 	g_assert_true(fu_device_has_flag(device, FWUPD_DEVICE_FLAG_REQUIRE_AC));
@@ -2374,11 +2435,13 @@ fu_backend_emulate_func(void)
 			     "      \"Events\" : ["
 			     "        {"
 			     "          \"Id\" : \"Ioctl:Request=0x007b,Data=AAA=,Length=0x2\","
-			     "          \"Data\" : \"Aw==\""
+			     "          \"Data\" : \"Aw==\","
+			     "          \"DataOut\" : \"Aw==\""
 			     "        },"
 			     "        {"
 			     "          \"Id\" : \"Ioctl:Request=0x007b,Data=AAA=,Length=0x2\","
-			     "          \"Data\" : \"Aw==\""
+			     "          \"Data\" : \"Aw==\","
+			     "          \"DataOut\" : \"Aw==\""
 			     "        }"
 			     "      ]"
 			     "    }"
@@ -5469,12 +5532,37 @@ fu_strsplit_stream_func(void)
 }
 
 static void
+fu_input_stream_find_func(void)
+{
+	const gchar *haystack = "I write free software. Firmware troublemaker.";
+	const gchar *needle1 = "Firmware";
+	const gchar *needle2 = "XXX";
+	gboolean ret;
+	gsize offset = 0;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GInputStream) stream = NULL;
+
+	stream =
+	    g_memory_input_stream_new_from_data((const guint8 *)haystack, strlen(haystack), NULL);
+	ret =
+	    fu_input_stream_find(stream, (const guint8 *)needle1, strlen(needle1), &offset, &error);
+	g_assert_no_error(error);
+	g_assert_true(ret);
+	g_assert_cmpint(offset, ==, 23);
+
+	ret =
+	    fu_input_stream_find(stream, (const guint8 *)needle2, strlen(needle2), &offset, &error);
+	g_assert_error(error, FWUPD_ERROR, FWUPD_ERROR_NOT_FOUND);
+	g_assert_false(ret);
+}
+
+static void
 fu_input_stream_chunkify_func(void)
 {
 	gboolean ret;
 	guint8 sum8 = 0;
+	guint16 crc16 = 0x0;
 	guint32 crc32 = 0xffffffff;
-	//	guint32 crc32 = 0x0;
 	g_autoptr(GByteArray) buf = g_byte_array_new();
 	g_autoptr(GInputStream) stream = NULL;
 	g_autoptr(GError) error = NULL;
@@ -5498,10 +5586,15 @@ fu_input_stream_chunkify_func(void)
 	checksum2 = g_compute_checksum_for_bytes(G_CHECKSUM_SHA1, blob);
 	g_assert_cmpstr(checksum, ==, checksum2);
 
-	ret = fu_input_stream_compute_crc32(stream, FU_CRC32_KIND_STANDARD, &crc32, &error);
+	ret = fu_input_stream_compute_crc16(stream, FU_CRC_KIND_B16_XMODEM, &crc16, &error);
 	g_assert_no_error(error);
 	g_assert_true(ret);
-	g_assert_cmpint(crc32, ==, fu_crc32(FU_CRC32_KIND_STANDARD, buf->data, buf->len));
+	g_assert_cmpint(crc16, ==, fu_crc16(FU_CRC_KIND_B16_XMODEM, buf->data, buf->len));
+
+	ret = fu_input_stream_compute_crc32(stream, FU_CRC_KIND_B32_STANDARD, &crc32, &error);
+	g_assert_no_error(error);
+	g_assert_true(ret);
+	g_assert_cmpint(crc32, ==, fu_crc32(FU_CRC_KIND_B32_STANDARD, buf->data, buf->len));
 }
 
 static void
@@ -5901,6 +5994,7 @@ main(int argc, char **argv)
 	g_test_add_func("/fwupd/efi-lz77{decompressor}", fu_efi_lz77_decompressor_func);
 	g_test_add_func("/fwupd/input-stream", fu_input_stream_func);
 	g_test_add_func("/fwupd/input-stream{chunkify}", fu_input_stream_chunkify_func);
+	g_test_add_func("/fwupd/input-stream{find}", fu_input_stream_find_func);
 	g_test_add_func("/fwupd/partial-input-stream", fu_partial_input_stream_func);
 	g_test_add_func("/fwupd/composite-input-stream", fu_composite_input_stream_func);
 	g_test_add_func("/fwupd/struct", fu_plugin_struct_func);
@@ -6009,6 +6103,7 @@ main(int argc, char **argv)
 	g_test_add_func("/fwupd/archive{cab}", fu_archive_cab_func);
 	g_test_add_func("/fwupd/device", fu_device_func);
 	g_test_add_func("/fwupd/device{event}", fu_device_event_func);
+	g_test_add_func("/fwupd/device{event-donor}", fu_device_event_donor_func);
 	g_test_add_func("/fwupd/device{vfuncs}", fu_device_vfuncs_func);
 	g_test_add_func("/fwupd/device{instance-ids}", fu_device_instance_ids_func);
 	g_test_add_func("/fwupd/device{composite-id}", fu_device_composite_id_func);
@@ -6019,6 +6114,7 @@ main(int argc, char **argv)
 	g_test_add_func("/fwupd/device{parent}", fu_device_parent_func);
 	g_test_add_func("/fwupd/device{children}", fu_device_children_func);
 	g_test_add_func("/fwupd/device{incorporate}", fu_device_incorporate_func);
+	g_test_add_func("/fwupd/device{incorporate-flag}", fu_device_incorporate_flag_func);
 	g_test_add_func("/fwupd/device{incorporate-descendant}",
 			fu_device_incorporate_descendant_func);
 	g_test_add_func("/fwupd/device{poll}", fu_device_poll_func);

@@ -17,6 +17,9 @@
 #endif
 #include <string.h>
 #include <sys/stat.h>
+#ifdef HAVE_MEMFD_CREATE
+#include <sys/mman.h>
+#endif
 
 #include "fwupd-error.h"
 
@@ -79,6 +82,50 @@ fu_io_channel_shutdown(FuIOChannel *self, GError **error)
 	return TRUE;
 }
 
+/**
+ * fu_io_channel_seek:
+ * @self: a #FuIOChannel
+ * @offset: an absolute offset in bytes
+ * @error: (nullable): optional return location for an error
+ *
+ * Seeks the file descriptor to a specific offset.
+ *
+ * Returns: %TRUE if all the seek worked.
+ *
+ * Since: 2.0.0
+ **/
+gboolean
+fu_io_channel_seek(FuIOChannel *self, gsize offset, GError **error)
+{
+	g_return_val_if_fail(FU_IS_IO_CHANNEL(self), FALSE);
+	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
+
+	if (self->fd == -1) {
+		g_set_error_literal(error,
+				    FWUPD_ERROR,
+				    FWUPD_ERROR_NOT_SUPPORTED,
+				    "channel is not open");
+		return FALSE;
+	}
+	if (lseek(self->fd, offset, SEEK_SET) < 0) {
+		g_set_error(error,
+			    G_IO_ERROR, /* nocheck:error */
+#ifdef HAVE_ERRNO_H
+			    g_io_error_from_errno(errno),
+#else
+			    G_IO_ERROR_FAILED, /* nocheck:blocked */
+#endif
+			    "failed to seek to 0x%04x: %s",
+			    (guint)offset,
+			    g_strerror(errno));
+		fwupd_error_convert(error);
+		return FALSE;
+	}
+
+	/* success */
+	return TRUE;
+}
+
 static gboolean
 fu_io_channel_flush_input(FuIOChannel *self, GError **error)
 {
@@ -119,6 +166,54 @@ fu_io_channel_write_bytes(FuIOChannel *self,
 	gsize bufsz = 0;
 	const guint8 *buf = g_bytes_get_data(bytes, &bufsz);
 	return fu_io_channel_write_raw(self, buf, bufsz, timeout_ms, flags, error);
+}
+
+typedef struct {
+	FuIOChannel *self;
+	guint timeout_ms;
+	FuIOChannelFlags flags;
+} FuIOChannelWriteStreamHelper;
+
+static gboolean
+fu_io_channel_write_stream_cb(const guint8 *buf, gsize bufsz, gpointer user_data, GError **error)
+{
+	FuIOChannelWriteStreamHelper *helper = (FuIOChannelWriteStreamHelper *)user_data;
+	return fu_io_channel_write_raw(helper->self,
+				       buf,
+				       bufsz,
+				       helper->timeout_ms,
+				       helper->flags,
+				       error);
+}
+
+/**
+ * fu_io_channel_write_stream:
+ * @self: a #FuIOChannel
+ * @stream: #GInputStream to write
+ * @timeout_ms: timeout in ms
+ * @flags: channel flags, e.g. %FU_IO_CHANNEL_FLAG_SINGLE_SHOT
+ * @error: (nullable): optional return location for an error
+ *
+ * Writes the stream to the fd, chucking when required.
+ *
+ * Returns: %TRUE if all the bytes was written
+ *
+ * Since: 2.0.0
+ **/
+gboolean
+fu_io_channel_write_stream(FuIOChannel *self,
+			   GInputStream *stream,
+			   guint timeout_ms,
+			   FuIOChannelFlags flags,
+			   GError **error)
+{
+	FuIOChannelWriteStreamHelper helper = {.self = self,
+					       .timeout_ms = timeout_ms,
+					       .flags = flags};
+	g_return_val_if_fail(FU_IS_IO_CHANNEL(self), FALSE);
+	g_return_val_if_fail(G_IS_INPUT_STREAM(self), FALSE);
+	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
+	return fu_input_stream_chunkify(stream, fu_io_channel_write_stream_cb, &helper, error);
 }
 
 /**
@@ -571,4 +666,46 @@ fu_io_channel_new_file(const gchar *filename, FuIoChannelOpenFlag open_flags, GE
 		return NULL;
 	}
 	return fu_io_channel_unix_new(fd);
+}
+
+/**
+ * fu_io_channel_virtual_new:
+ * @name: (not nullable): memfd name
+ * @error: (nullable): optional return location for an error
+ *
+ * Creates a new virtual object to write and/or read from.
+ *
+ * Returns: a #FuIOChannel
+ *
+ * Since: 2.0.0
+ **/
+FuIOChannel *
+fu_io_channel_virtual_new(const gchar *name, GError **error)
+{
+#ifdef HAVE_MEMFD_CREATE
+	gint fd;
+
+	g_return_val_if_fail(name != NULL, NULL);
+	g_return_val_if_fail(error == NULL || *error == NULL, NULL);
+
+	fd = memfd_create(name, MFD_CLOEXEC);
+	if (fd < 0) {
+		g_set_error(error,
+			    G_IO_ERROR, /* nocheck:error */
+#ifdef HAVE_ERRNO_H
+			    g_io_error_from_errno(errno),
+#else
+			    G_IO_ERROR_FAILED, /* nocheck:blocked */
+#endif
+			    "failed to create %s: %s",
+			    name,
+			    g_strerror(errno));
+		fwupd_error_convert(error);
+		return NULL;
+	}
+	return fu_io_channel_unix_new(fd);
+#else
+	g_set_error_literal(error, FWUPD_ERROR, FWUPD_ERROR_NOT_SUPPORTED, "memfd not supported");
+	return NULL;
+#endif
 }

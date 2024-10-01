@@ -336,7 +336,9 @@ fu_logitech_hidpp_device_create_radio_child(FuLogitechHidppDevice *self,
 
 	radio_version = g_strdup_printf("0x%.4x", build);
 	radio = fu_logitech_hidpp_radio_new(ctx, entity);
-	fu_device_set_physical_id(FU_DEVICE(radio), fu_device_get_physical_id(FU_DEVICE(self)));
+	fu_device_incorporate(FU_DEVICE(radio),
+			      FU_DEVICE(self),
+			      FU_DEVICE_INCORPORATE_FLAG_PHYSICAL_ID);
 	/*
 	 * Use the parent logical id as well as the model id for the
 	 * logical id of the radio child device. This allows the radio
@@ -690,12 +692,8 @@ fu_logitech_hidpp_device_probe(FuDevice *device, GError **error)
 	}
 
 	/* this is a non-standard extension */
-	fu_device_add_instance_u16(FU_DEVICE(self),
-				   "VID",
-				   fu_udev_device_get_vendor(FU_UDEV_DEVICE(device)));
-	fu_device_add_instance_u16(FU_DEVICE(self),
-				   "PID",
-				   fu_udev_device_get_model(FU_UDEV_DEVICE(device)));
+	fu_device_add_instance_u16(FU_DEVICE(self), "VID", fu_device_get_vid(device));
+	fu_device_add_instance_u16(FU_DEVICE(self), "PID", fu_device_get_pid(device));
 	return fu_device_build_instance_id(FU_DEVICE(self), error, "UFY", "VID", "PID", NULL);
 }
 
@@ -1419,6 +1417,6 @@ fu_logitech_hidpp_device_new(FuUdevDevice *parent)
 			    fu_udev_device_get_device_file(parent),
 			    NULL);
 	priv = GET_PRIVATE(self);
-	priv->io_channel = fu_logitech_hidpp_runtime_get_io_channel(FU_HIDPP_RUNTIME(parent));
+	priv->io_channel = fu_udev_device_get_io_channel(FU_UDEV_DEVICE(parent));
 	return self;
 }

@@ -14,6 +14,8 @@
 
 #define fu_device_set_plugin(d, v) fwupd_device_set_plugin(FWUPD_DEVICE(d), v)
 
+void
+fu_device_remove_children(FuDevice *self) G_GNUC_NON_NULL(1);
 GPtrArray *
 fu_device_get_parent_guids(FuDevice *self) G_GNUC_NON_NULL(1);
 gboolean
@@ -84,6 +86,8 @@ FuDeviceEvent *
 fu_device_save_event(FuDevice *self, const gchar *id);
 FuDeviceEvent *
 fu_device_load_event(FuDevice *self, const gchar *id, GError **error);
+void
+fu_device_set_target(FuDevice *self, FuDevice *target);
 
 FuBackend *
 fu_device_get_backend(FuDevice *self);
