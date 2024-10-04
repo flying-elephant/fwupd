@@ -30,33 +30,74 @@ Because we do not want to modify the daemon, we think it makes sense to *load* a
 state over D-Bus. Each phase can be controlled, which makes it easy to view, and edit, the recorded
 emulation data.
 
-For instance, calling `fwupdmgr emulation-tag` would ask the end user to choose a device to start
+## Getting started
+
+The very first thing to do is to turn on the emulation functionality for fwupd.  It's off by default.
+
+    fwupdmgr modify-config fwupd AllowEmulation true
+
+Restart the daemon.
+
+**NOTE:** *If you are running in the fwupd development environment, you will need to manually restart the
+daemon because dbus activation doesn't work in the fwupd development environment.*
+
+## Tell the daemon to record a hotplug device
+
+If the device you will be recording from is *hotpluggable* you will use the **emulation-tag** feature for the daemon.
+Calling `fwupdmgr emulation-tag` would ask the end user to choose a device to start
 *recording* so that subsequent re-plugs are available to save.
 As the device state may not be persistent we save the device-should-be-recorded metadata in the
 pending database like we would do for a successful firmware update.
 
-To demo this, something like this could be done:
+Here is how a hotplugged device would be recorded from:
 
-    # connect ColorHug2
-    fwupdmgr modify-config AllowEmulation true
+    # connect ColorHug2 and use the device ID to tag it
     fwupdmgr emulation-tag b0a78eb71f4eeea7df8fb114522556ba8ce22074
     # or, using the GUID
     # fwupdmgr emulation-tag 2082b5e0-7a64-478a-b1b2-e3404fab6dad
     # remove and re-insert ColorHug2
     fwupdmgr get-devices --filter emulation-tag
+
+## Tell the daemon to record a persistent device
+
+Persistent devices are coldplugged or physically not removable from the system.  In this case you must
+tell the daemon by a list of device IDs to start recording data immediately at startup by specifying in the config file.
+
+    fwupdmgr modify-config fwupd EmulatedDevices b0a78eb71f4eeea7df8fb114522556ba8ce22074
+
+Restart the daemon.
+
+**NOTE:** *If you are running in the fwupd development environment, you will need to manually restart the
+daemon because dbus activation doesn't work in the fwupd development environment.*
+
+## Record some data
+
+In both cases the flow to record the data is identical. You will use the device as normally and when you're
+done with the update you will record all events into a zip file.
+
     fwupdmgr download https://fwupd.org/downloads/170f2c19f17b7819644d3fcc7617621cc3350a04-hughski-colorhug2-2.0.6.cab
-    fwupdmgr install e5* --allow-reinstall
+    fwupdmgr install 17*.cab --allow-reinstall
     fwupdmgr emulation-save colorhug.zip
-    # remove ColorHug2
+
+## Test your data
+
+Now that you have data recorded you can remove your device from the system and then try to load the emulation
+data.  You should be able to see the emulated device as well as interact with it.
+
     fwupdmgr emulation-load colorhug.zip
     fwupdmgr get-devices --filter emulated
-    fwupdmgr install e5* --allow-reinstall
-    fwupdmgr modify-config AllowEmulation false
+    fwupdmgr install 17*.cab --allow-reinstall
+
+## Upload test data to LVFS
+
+Test data can be added to LVFS by visiting the `Assets` tab of the firmware release on LVFS.
+There is an upload button, and once uploaded a URL will be available that can be used for device tests.
 
 ## Device Tests
 
-The `emulation-url` string parameter can be specified in the `steps` section of a specific device
-test. This causes the front end to load the emulation data before running the specific step.
+Device tests are utilized as part of continuous integration to ensure that all device updates continue to work
+as the software stack changes. Device tests will download a payload from the web (typically from LVFS) and follow
+the steps to install the firmware. This payload is specified as an `emulation-url` string parameter in the `steps` section of a specific device test. This causes the front end to load the emulation data before running the specific step.
 
 Device tests without emulation data will be skipped.
 
@@ -69,10 +110,6 @@ For example:
     Decompressing…           [***************************************]
     Waiting…                 [***************************************]
     Hughski ColorHug2: OK!
-
-For devices that cannot be hotplugged, the `fwupd.conf` config option `EmulatedDevices` option
-can be used, by specifying the device IDs of the device that should be monitored.
-When adding modifying `EmulatedDevices` the daemon must be restarted for it to take effect.
 
 ## Pcap file conversion
 
