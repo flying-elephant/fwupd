@@ -427,7 +427,7 @@ fu_engine_config_init(FuEngineConfig *self)
 	g_signal_connect(self, "changed", G_CALLBACK(fu_engine_config_changed_cb), NULL);
 
 	/* defaults changed here will also be reflected in the fwupd.conf man page */
-	fu_engine_config_set_default(self, "AllowEmulation", "false");
+	fu_engine_config_set_default(self, "AllowEmulation", "true");
 	fu_engine_config_set_default(self, "ApprovedFirmware", NULL);
 	fu_engine_config_set_default(self, "ArchiveSizeMax", archive_size_max_default);
 	fu_engine_config_set_default(self, "BlockedFirmware", NULL);
