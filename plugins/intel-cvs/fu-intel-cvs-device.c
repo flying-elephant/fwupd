@@ -63,10 +63,20 @@ fu_intel_cvs_device_setup(FuDevice *device, GError **error)
 	fu_device_set_version(device, version);
 	fu_device_set_vid(device, fu_struct_intel_cvs_probe_get_vid(st_probe));
 	fu_device_set_pid(device, fu_struct_intel_cvs_probe_get_pid(st_probe));
-	fu_device_build_vendor_id_u16(device, "USB", fu_struct_intel_cvs_probe_get_vid(st_probe));
-	fu_device_add_instance_u16(device, "VID", fu_struct_intel_cvs_probe_get_vid(st_probe));
-	fu_device_add_instance_u16(device, "PID", fu_struct_intel_cvs_probe_get_pid(st_probe));
 	return fu_device_build_instance_id(device, error, "I2C", "NAME", "VID", "PID", NULL);
+}
+
+static void
+fu_intel_cvs_device_vid_notify_cb(FuDevice *device, GParamSpec *pspec, gpointer user_data)
+{
+	fu_device_add_instance_u16(device, "VID", fu_device_get_vid(device));
+	fu_device_build_vendor_id_u16(device, "USB", fu_device_get_vid(device));
+}
+
+static void
+fu_intel_cvs_device_pid_notify_cb(FuDevice *device, GParamSpec *pspec, gpointer user_data)
+{
+	fu_device_add_instance_u16(device, "PID", fu_device_get_pid(device));
 }
 
 static FuFirmware *
@@ -265,6 +275,14 @@ fu_intel_cvs_device_init(FuIntelCvsDevice *self)
 	fu_device_add_flag(FU_DEVICE(self), FWUPD_DEVICE_FLAG_SELF_RECOVERY);
 	fu_device_add_private_flag(FU_DEVICE(self), FU_DEVICE_PRIVATE_FLAG_ONLY_WAIT_FOR_REPLUG);
 	fu_device_add_icon(FU_DEVICE(self), "camera-video");
+	g_signal_connect(FU_DEVICE(self),
+			 "notify::vid",
+			 G_CALLBACK(fu_intel_cvs_device_vid_notify_cb),
+			 NULL);
+	g_signal_connect(FU_DEVICE(self),
+			 "notify::pid",
+			 G_CALLBACK(fu_intel_cvs_device_pid_notify_cb),
+			 NULL);
 }
 
 static void
