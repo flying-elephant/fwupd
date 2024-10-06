@@ -30,7 +30,7 @@ enum FuIntelCvsDevstate {
     Failed, // FIXME WHAT ARE THESE ENUMS
 }
 
-#[derive(ParseStream)]
+#[derive(ParseBytes)]
 struct FuStructIntelCvsProbe {
     major: u32le,
     minor: u32le,
@@ -50,7 +50,7 @@ struct FuStructIntelCvsWrite {
     fw_bin_fd: i32,
 }
 
-#[derive(ParseStream)]
+#[derive(ParseBytes)]
 struct FuStructIntelCvsStatus {
     dev_state: FuIntelCvsDevstate,
     fw_upd_retries: u32le,

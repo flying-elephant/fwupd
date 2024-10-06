@@ -10,8 +10,7 @@
 #include "fu-intel-cvs-firmware.h"
 #include "fu-intel-cvs-struct.h"
 
-#define FU_INTEL_CVS_DEVICE_INIT_TIMEOUT    500 /* ms */
-#define FU_INTEL_CVS_DEVICE_PAYLOAD_TIMEOUT 500 /* ms */
+#define FU_INTEL_CVS_DEVICE_SYSFS_TIMEOUT 500 /* ms */
 
 struct _FuIntelCvsDevice {
 	FuI2cDevice parent_instance;
@@ -35,19 +34,19 @@ static gboolean
 fu_intel_cvs_device_setup(FuDevice *device, GError **error)
 {
 	FuIntelCvsDevice *self = FU_INTEL_CVS_DEVICE(device);
-	g_autofree gchar *fn_probe = NULL;
 	g_autofree gchar *version = NULL;
 	g_autoptr(FuStructIntelCvsProbe) st_probe = NULL;
-	g_autoptr(GInputStream) stream = NULL;
+	g_autoptr(GBytes) blob = NULL;
 
 	/* read and parse the status */
-	fn_probe = g_build_filename(fu_udev_device_get_sysfs_path(FU_UDEV_DEVICE(self)),
-				    "cvs_ctrl_data_pre",
-				    NULL);
-	stream = fu_input_stream_from_path(fn_probe, error);
-	if (stream == NULL)
+	blob = fu_udev_device_read_sysfs_bytes(FU_UDEV_DEVICE(self),
+					       "cvs_ctrl_data_pre",
+					       FU_STRUCT_INTEL_CVS_PROBE_SIZE,
+					       FU_INTEL_CVS_DEVICE_SYSFS_TIMEOUT,
+					       error);
+	if (blob == NULL)
 		return FALSE;
-	st_probe = fu_struct_intel_cvs_probe_parse_stream(stream, 0x0, error);
+	st_probe = fu_struct_intel_cvs_probe_parse_bytes(blob, 0x0, error);
 	if (st_probe == NULL)
 		return FALSE;
 
@@ -100,34 +99,26 @@ fu_intel_cvs_device_prepare_firmware(FuDevice *device,
 	return g_steal_pointer(&firmware);
 }
 
-typedef struct {
-	FuProgress *progress;
-	GInputStream *stream;
-} FuIntelCvsDeviceWriteHelper;
-
-static void
-fu_intel_cvs_device_write_helper_free(FuIntelCvsDeviceWriteHelper *helper)
-{
-	if (helper->progress != NULL)
-		g_object_unref(helper->progress);
-	if (helper->stream != NULL)
-		g_object_unref(helper->stream);
-	g_free(helper);
-}
-
-G_DEFINE_AUTOPTR_CLEANUP_FUNC(FuIntelCvsDeviceWriteHelper, fu_intel_cvs_device_write_helper_free)
-
 static gboolean
 fu_intel_cvs_device_check_status_cb(FuDevice *device, gpointer user_data, GError **error)
 {
 	FuIntelCvsDevstate devstate;
-	FuIntelCvsDeviceWriteHelper *helper = (FuIntelCvsDeviceWriteHelper *)user_data;
+	FuProgress *progress = FU_PROGRESS(user_data);
 	g_autoptr(FuStructIntelCvsStatus) st_status = NULL;
+	g_autoptr(GBytes) blob = NULL;
 
-	st_status = fu_struct_intel_cvs_status_parse_stream(helper->stream, 0x0, error);
+	/* read and parse the status */
+	blob = fu_udev_device_read_sysfs_bytes(FU_UDEV_DEVICE(device),
+					       "cvs_ctrl_data_fwupd",
+					       FU_STRUCT_INTEL_CVS_PROBE_SIZE,
+					       FU_INTEL_CVS_DEVICE_SYSFS_TIMEOUT,
+					       error);
+	if (blob == NULL)
+		return FALSE;
+	st_status = fu_struct_intel_cvs_status_parse_bytes(blob, 0x0, error);
 	if (st_status == NULL)
 		return FALSE;
-	fu_progress_set_percentage_full(helper->progress,
+	fu_progress_set_percentage_full(progress,
 					fu_struct_intel_cvs_status_get_num_packets_sent(st_status),
 					fu_struct_intel_cvs_status_get_total_packets(st_status));
 	if (fu_struct_intel_cvs_status_get_fw_dl_finished(st_status) == 0) {
@@ -161,12 +152,8 @@ fu_intel_cvs_device_write_firmware(FuDevice *device,
 				   GError **error)
 {
 	FuIntelCvsDevice *self = FU_INTEL_CVS_DEVICE(device);
-	g_autofree gchar *fn_pre = NULL;
-	g_autofree gchar *fn_status = NULL;
 	g_autoptr(FuChunkArray) chunks = NULL;
-	g_autoptr(FuIntelCvsDeviceWriteHelper) helper = g_new0(FuIntelCvsDeviceWriteHelper, 1);
 	g_autoptr(FuIOChannel) io_payload = NULL;
-	g_autoptr(FuIOChannel) io_pre = NULL;
 	g_autoptr(FuStructIntelCvsWrite) st_write = fu_struct_intel_cvs_write_new();
 	g_autoptr(GInputStream) stream = NULL;
 
@@ -181,7 +168,7 @@ fu_intel_cvs_device_write_firmware(FuDevice *device,
 		return FALSE;
 	if (!fu_io_channel_write_stream(io_payload,
 					stream,
-					FU_INTEL_CVS_DEVICE_PAYLOAD_TIMEOUT,
+					FU_INTEL_CVS_DEVICE_SYSFS_TIMEOUT,
 					FU_IO_CHANNEL_FLAG_NONE,
 					error)) {
 		g_prefix_error(error, "failed to write payload to virtual stream: ");
@@ -195,36 +182,20 @@ fu_intel_cvs_device_write_firmware(FuDevice *device,
 	fu_struct_intel_cvs_write_set_max_flash_time(st_write, self->max_flash_time);
 	fu_struct_intel_cvs_write_set_max_fwupd_retry_count(st_write, self->max_retry_count);
 	fu_struct_intel_cvs_write_set_fw_bin_fd(st_write, fu_io_channel_unix_get_fd(io_payload));
-	fn_pre = g_build_filename(fu_udev_device_get_sysfs_path(FU_UDEV_DEVICE(self)),
-				  "cvs_ctrl_data_pre",
-				  NULL);
-	io_pre =
-	    fu_io_channel_new_file(fn_pre,
-				   FU_IO_CHANNEL_OPEN_FLAG_READ | FU_IO_CHANNEL_OPEN_FLAG_WRITE,
-				   error);
-	if (io_pre == NULL)
-		return FALSE;
-	if (!fu_io_channel_write_byte_array(io_pre,
-					    st_write,
-					    FU_INTEL_CVS_DEVICE_INIT_TIMEOUT,
-					    FU_IO_CHANNEL_FLAG_NONE,
-					    error))
+	if (!fu_udev_device_write_sysfs_byte_array(FU_UDEV_DEVICE(self),
+						   "cvs_ctrl_data_pre",
+						   st_write,
+						   FU_INTEL_CVS_DEVICE_SYSFS_TIMEOUT,
+						   error))
 		return FALSE;
 
 	/* poll the status */
-	fn_status = g_build_filename(fu_udev_device_get_sysfs_path(FU_UDEV_DEVICE(self)),
-				     "cvs_ctrl_data_fwupd",
-				     NULL);
-	helper->progress = g_object_ref(progress);
-	helper->stream = fu_input_stream_from_path(fn_status, error);
-	if (helper->stream == NULL)
-		return FALSE;
 	return fu_device_retry_full(device,
 				    fu_intel_cvs_device_check_status_cb,
 				    (self->max_flash_time + self->max_flash_time) *
 					self->max_retry_count / 1000,
 				    1000, /* ms */
-				    helper,
+				    progress,
 				    error);
 }
 
