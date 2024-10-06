@@ -24,7 +24,7 @@ fu_intel_cvs_firmware_export(FuFirmware *firmware, FuFirmwareExportFlags flags, 
 {
 	FuIntelCvsFirmware *self = FU_INTEL_CVS_FIRMWARE(firmware);
 	fu_xmlb_builder_insert_kx(bn, "vid", self->vid);
-	fu_xmlb_builder_insert_kx(bn, "pid", self->vid);
+	fu_xmlb_builder_insert_kx(bn, "pid", self->pid);
 }
 
 static gboolean
@@ -56,14 +56,13 @@ fu_intel_cvs_firmware_parse(FuFirmware *firmware,
 		return FALSE;
 
 	/* verify checksum of header */
-	checksum_new = fu_sum32(st_hdr->data, st_hdr->len - 4);
-	if (checksum_new != fu_struct_intel_cvs_firmware_hdr_get_header_checksum(st_hdr)) {
+	checksum_new = fu_sum32w(st_hdr->data, st_hdr->len, G_LITTLE_ENDIAN);
+	if (checksum_new != 0) {
 		g_set_error(error,
 			    FWUPD_ERROR,
 			    FWUPD_ERROR_INVALID_FILE,
-			    "invalid header checksum, got 0x%x and expected 0x%x",
-			    checksum_new,
-			    fu_struct_intel_cvs_firmware_hdr_get_header_checksum(st_hdr));
+			    "invalid header checksum, got 0x%x excess",
+			    checksum_new);
 		return FALSE;
 	}
 

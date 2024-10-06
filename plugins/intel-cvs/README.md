@@ -24,7 +24,7 @@ These devices match from the standard i2c instance ID values, e.g.
 The devices then create firmware matchable instance ID values which include the product
 PID and VID, e.g.
 
-* `IC2\NAME_INTC10DE:00&VID_1234&PID_5678`
+* `IC2\NAME_INTC10DE:00&VID_06CB&PID_0701`
 
 ## Update Behavior
 
